@@ -27,6 +27,7 @@ endif()
 
 target_link_libraries(
   ${target}
+  PRIVATE
   arch
   base
   client
@@ -38,6 +39,11 @@ target_link_libraries(
   app
   Qt6::Widgets
   ${libs})
+
+if(BUILD_ENHANCED)
+  target_sources(${target} PRIVATE EnhancedFileCommand.cpp EnhancedFileCommand.h)
+  target_link_libraries(${target} PRIVATE enhanced)
+endif()
 
 install(
   TARGETS ${target}

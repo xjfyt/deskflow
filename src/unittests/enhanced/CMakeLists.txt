@@ -7,3 +7,10 @@ create_test(
   DEPENDS enhanced
   SOURCE EnhancedProtocolTests.cpp
 )
+
+create_test(
+  NAME EnhancedFileTransferTests
+  WORKING_DIRECTORY ${CMAKE_RUNTIME_OUTPUT_DIRECTORY}
+  DEPENDS enhanced
+  SOURCE EnhancedFileTransferTests.cpp
+)

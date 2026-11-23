@@ -4,6 +4,8 @@
 add_library(enhanced STATIC
   FileManifest.cpp
   FileManifest.h
+  FileTransfer.cpp
+  FileTransfer.h
   Protocol.cpp
   Protocol.h
   TlsChannel.cpp

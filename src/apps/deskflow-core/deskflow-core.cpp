@@ -8,6 +8,10 @@
 
 #include "CoreArgParser.h"
 
+#ifdef DESKFLOW_ENHANCED
+#include "EnhancedFileCommand.h"
+#endif
+
 #include "arch/Arch.h"
 #include "base/EventQueue.h"
 #include "base/Log.h"
@@ -26,6 +30,8 @@
 #include <QSharedMemory>
 #include <QTextStream>
 #include <QThread>
+
+#include <cstring>
 
 void qtMessageHandler(QtMsgType type, const QMessageLogContext &context, const QString &message)
 {
@@ -69,6 +75,11 @@ App *createApp(const CoreArgParser &parser, EventQueue &events, const QString &p
 
 int main(int argc, char **argv)
 {
+#ifdef DESKFLOW_ENHANCED
+  if (argc > 1 && std::strcmp(argv[1], "--enhanced-files") == 0)
+    return deskflow::enhanced::fileCommand(argc, argv);
+#endif
+
 #if defined(Q_OS_WIN)
   ArchMiscWindows::setInstanceWin32(GetModuleHandle(nullptr));
 #endif
