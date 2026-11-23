@@ -24,6 +24,7 @@ endif()
 #Project level options
 option(BUILD_INSTALLER "Build installer" ON)
 option(ENABLE_COVERAGE "Enable test coverage" OFF)
+option(BUILD_ENHANCED "Build the opt-in Deskflow Enhanced features" ON)
 if(UNIX)
   if(APPLE)
     option(BUILD_OSX_BUNDLE "Build mac os bundle" ON)
