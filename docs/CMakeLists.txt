@@ -27,6 +27,10 @@ install(
   DESTINATION ${CMAKE_INSTALL_DOCDIR}
 )
 
+if(BUILD_ENHANCED)
+  install(FILES Enhanced.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+endif()
+
 # Make sure that help docs are moved.
 add_custom_command(
     TARGET docs PRE_BUILD

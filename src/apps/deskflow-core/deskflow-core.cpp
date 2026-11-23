@@ -10,6 +10,9 @@
 
 #ifdef DESKFLOW_ENHANCED
 #include "EnhancedFileCommand.h"
+#ifdef Q_OS_WIN
+#include "enhanced/windows/WindowsInput.h"
+#endif
 #endif
 
 #include "arch/Arch.h"
@@ -78,6 +81,10 @@ int main(int argc, char **argv)
 #ifdef DESKFLOW_ENHANCED
   if (argc > 1 && std::strcmp(argv[1], "--enhanced-files") == 0)
     return deskflow::enhanced::fileCommand(argc, argv);
+#ifdef Q_OS_WIN
+  if (argc > 1 && std::strcmp(argv[1], "--enhanced-control") == 0)
+    return deskflow::enhanced::windowsInputCommand(argc, argv);
+#endif
 #endif
 
 #if defined(Q_OS_WIN)

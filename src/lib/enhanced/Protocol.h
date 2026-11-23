@@ -30,7 +30,9 @@ enum class Message : quint16
   Digest,
   FileAck,
   Finish,
-  Committed
+  Committed,
+  InputPoll,
+  InputState
 };
 
 struct Header

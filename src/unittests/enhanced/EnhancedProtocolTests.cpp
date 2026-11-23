@@ -4,6 +4,7 @@
  */
 
 #include "enhanced/FileManifest.h"
+#include "enhanced/InputLease.h"
 #include "enhanced/Protocol.h"
 
 #include <QtTest>
@@ -60,6 +61,31 @@ private Q_SLOTS:
     auto incomplete = FileManifest{{{QStringLiteral("a"), false, 1}}}.encode();
     incomplete.chop(1);
     QVERIFY_EXCEPTION_THROWN(FileManifest::decode(incomplete), Error);
+  }
+
+  void leaseAcceptsOnlyTheCurrentOriginAndEpoch()
+  {
+    InputState state;
+    const InputPoll request{0, 100, true, false, {}};
+    advanceLease(state, request, request);
+    QCOMPARE(state.owner, InputSide::None);
+    advanceLease(state, {}, request);
+    QCOMPARE(state.owner, InputSide::Connector);
+    QCOMPARE(state.epoch, 1);
+    const InputPoll oldEpoch{0, 0, false, false, {{InputKind::Key, 30, 1}}};
+    const InputPoll input{1, 0, false, false, {{InputKind::Key, 30, 1}}};
+    advanceLease(state, input, oldEpoch);
+    QVERIFY(state.events.isEmpty());
+    advanceLease(state, {}, InputPoll::decode(input.encode()));
+    QCOMPARE(state.events.size(), 1);
+    advanceLease(state, {1, 0, false, true, {}}, input);
+    QCOMPARE(state.owner, InputSide::None);
+    QVERIFY(state.events.isEmpty());
+    advanceLease(state, request, {});
+    QCOMPARE(state.owner, InputSide::None);
+    advanceLease(state, {1, 0, true, false, {}}, {});
+    QCOMPARE(state.owner, InputSide::Listener);
+    QCOMPARE(state.epoch, 2);
   }
 };
 
