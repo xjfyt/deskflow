@@ -124,3 +124,8 @@ target_link_libraries(${target}
     net
     Qt6::Widgets
 )
+
+if(BUILD_ENHANCED)
+  target_sources(${target} PRIVATE dialogs/FileTransferDialog.cpp dialogs/FileTransferDialog.h)
+  target_link_libraries(${target} PRIVATE enhanced)
+endif()

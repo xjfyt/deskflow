@@ -337,6 +337,185 @@ p, li { white-space: pre-wrap; }
     </message>
 </context>
 <context>
+    <name>Enhanced</name>
+    <message>
+        <source>Invalid or oversized file manifest.</source>
+        <translation>文件清单无效或超过大小限制。</translation>
+    </message>
+    <message>
+        <source>Invalid enhanced protocol frame.</source>
+        <translation>增强协议帧无效。</translation>
+    </message>
+    <message>
+        <source>Unsupported enhanced protocol version.</source>
+        <translation>不支持该增强协议版本。</translation>
+    </message>
+    <message>
+        <source>The selection contains a link, unavailable item or unsupported path.</source>
+        <translation>选中项包含链接、不可用项目或不支持的路径。</translation>
+    </message>
+    <message>
+        <source>The selection is larger than the 20 GiB transfer limit.</source>
+        <translation>选中项超过 20 GiB 的传输上限。</translation>
+    </message>
+    <message>
+        <source>A selected directory is unreadable.</source>
+        <translation>有选中的目录无法读取。</translation>
+    </message>
+    <message>
+        <source>Enter a different peer&apos;s SHA-256 fingerprint, an IP address and two distinct ports.</source>
+        <translation>请输入对端的 SHA-256 指纹、IP 地址和两个不同的端口。</translation>
+    </message>
+    <message>
+        <source>The peer does not support enhanced file transfer.</source>
+        <translation>对端不支持增强文件传输。</translation>
+    </message>
+    <message>
+        <source>The source selection changed during the transfer.</source>
+        <translation>源文件或目录在传输中发生了变化。</translation>
+    </message>
+    <message>
+        <source>A selected file could not be opened safely.</source>
+        <translation>无法安全打开选中的文件。</translation>
+    </message>
+    <message>
+        <source>A selected file changed or could not be read.</source>
+        <translation>选中的文件发生变化或无法读取。</translation>
+    </message>
+    <message>
+        <source>Could not create a received folder.</source>
+        <translation>无法创建接收目录。</translation>
+    </message>
+    <message>
+        <source>Could not create a received file.</source>
+        <translation>无法创建接收文件。</translation>
+    </message>
+    <message>
+        <source>Could not write the received file. Check the available disk space.</source>
+        <translation>无法写入接收文件。请检查可用磁盘空间。</translation>
+    </message>
+    <message>
+        <source>A received file failed SHA-256 verification.</source>
+        <translation>收到的文件未通过 SHA-256 校验。</translation>
+    </message>
+    <message>
+        <source>Could not finish writing a received file.</source>
+        <translation>无法完成接收文件写入。</translation>
+    </message>
+    <message>
+        <source>Could not close a received file.</source>
+        <translation>无法关闭接收文件。</translation>
+    </message>
+    <message>
+        <source>Select an existing local destination folder.</source>
+        <translation>请选择现有的本机接收目录。</translation>
+    </message>
+    <message>
+        <source>Could not resolve the destination folder.</source>
+        <translation>无法解析接收目录。</translation>
+    </message>
+    <message>
+        <source>There is not enough free space to receive this selection.</source>
+        <translation>可用磁盘空间不足，无法接收选中项。</translation>
+    </message>
+    <message>
+        <source>Could not create a private transfer folder.</source>
+        <translation>无法创建传输暂存目录。</translation>
+    </message>
+    <message>
+        <source>Could not authorize the enhanced data connection.</source>
+        <translation>无法授权增强数据连接。</translation>
+    </message>
+    <message>
+        <source>The enhanced data connection was not authorized.</source>
+        <translation>增强数据连接未通过授权。</translation>
+    </message>
+    <message>
+        <source>Could not publish the verified files in the selected destination.</source>
+        <translation>无法在选定位置保存校验后的文件。</translation>
+    </message>
+    <message>
+        <source>Could not read the enhanced identity.</source>
+        <translation>无法读取增强模式的本机身份。</translation>
+    </message>
+    <message>
+        <source>The enhanced connection timed out.</source>
+        <translation>增强连接超时。</translation>
+    </message>
+    <message>
+        <source>Could not create the enhanced identity directory.</source>
+        <translation>无法创建增强身份目录。</translation>
+    </message>
+    <message>
+        <source>The enhanced identity is in use. Try again.</source>
+        <translation>增强身份正在使用，请重试。</translation>
+    </message>
+    <message>
+        <source>Could not create the enhanced identity.</source>
+        <translation>无法创建增强身份。</translation>
+    </message>
+    <message>
+        <source>Could not save the enhanced identity.</source>
+        <translation>无法保存增强身份。</translation>
+    </message>
+    <message>
+        <source>The enhanced identity does not contain a certificate.</source>
+        <translation>增强身份文件中没有证书。</translation>
+    </message>
+    <message>
+        <source>Could not write to the enhanced connection.</source>
+        <translation>无法向增强连接发送数据。</translation>
+    </message>
+    <message>
+        <source>The enhanced connection closed.</source>
+        <translation>增强连接已关闭。</translation>
+    </message>
+    <message>
+        <source>Could not read from the enhanced connection.</source>
+        <translation>无法读取增强连接的数据。</translation>
+    </message>
+    <message>
+        <source>Enhanced TLS connection failed. Check both fingerprints and certificate validity.</source>
+        <translation>增强 TLS 连接失败。请检查两端指纹及证书有效期。</translation>
+    </message>
+    <message>
+        <source>Could not configure enhanced TLS.</source>
+        <translation>无法配置增强 TLS。</translation>
+    </message>
+    <message>
+        <source>Could not load the enhanced TLS certificate and private key.</source>
+        <translation>无法加载增强 TLS 证书和私钥。</translation>
+    </message>
+    <message>
+        <source>Could not start enhanced TLS.</source>
+        <translation>无法启动增强 TLS。</translation>
+    </message>
+    <message>
+        <source>The enhanced peer fingerprint did not match.</source>
+        <translation>对端的增强证书指纹不匹配。</translation>
+    </message>
+    <message>
+        <source>Unexpected enhanced protocol message.</source>
+        <translation>收到非预期的增强协议消息。</translation>
+    </message>
+    <message>
+        <source>Transfer cancelled.</source>
+        <translation>传输已取消。</translation>
+    </message>
+    <message>
+        <source>Could not open enhanced port %1 on the selected address.</source>
+        <translation>无法在指定地址上监听增强端口 %1。</translation>
+    </message>
+    <message>
+        <source>Could not connect to enhanced port %1.</source>
+        <translation>无法连接增强端口 %1。</translation>
+    </message>
+    <message>
+        <source>The source selection includes a root, link or missing path.</source>
+        <translation>选中项包含根目录、链接或不存在的路径。</translation>
+    </message>
+</context>
+<context>
     <name>FingerprintDialog</name>
     <message>
         <source>Local Fingerprints</source>
@@ -746,6 +925,10 @@ Additionally, check you are able to %1 the server config file: %2</source>
     <message>
         <source>&lt;p&gt;Keyboard layout support requires matching layouts on all computers. The following layouts from the other computer are not installed on this computer:&lt;/p&gt;&lt;p&gt;&lt;b&gt;%1&lt;/b&gt;&lt;/p&gt;&lt;p&gt;Please install them to enable support for these layouts.&lt;/p&gt;</source>
         <translation type="unfinished"></translation>
+    </message>
+    <message>
+        <source>Enhanced File Transfer…</source>
+        <translation>增强文件传输…</translation>
     </message>
 </context>
 <context>
@@ -1395,6 +1578,161 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Encryption Disabled</source>
         <translation>加密已禁用</translation>
+    </message>
+</context>
+<context>
+    <name>deskflow::gui::FileTransferDialog</name>
+    <message>
+        <source>Enhanced File Transfer</source>
+        <translation>增强文件传输</translation>
+    </message>
+    <message>
+        <source>Sender: receiver IP. Receiver: your local IP.</source>
+        <translation>发送端填接收端 IP，接收端填本机 IP。</translation>
+    </message>
+    <message>
+        <source>Control port</source>
+        <translation>控制端口</translation>
+    </message>
+    <message>
+        <source>Data port</source>
+        <translation>数据端口</translation>
+    </message>
+    <message>
+        <source>Your fingerprint</source>
+        <translation>本机指纹</translation>
+    </message>
+    <message>
+        <source>Verified peer fingerprint</source>
+        <translation>已核对的对端指纹</translation>
+    </message>
+    <message>
+        <source>IP address</source>
+        <translation>IP 地址</translation>
+    </message>
+    <message>
+        <source>Control and data ports</source>
+        <translation>控制端口和数据端口</translation>
+    </message>
+    <message>
+        <source>Files and folders to send</source>
+        <translation>要发送的文件和文件夹</translation>
+    </message>
+    <message>
+        <source>Add files…</source>
+        <translation>添加文件…</translation>
+    </message>
+    <message>
+        <source>Add folder…</source>
+        <translation>添加文件夹…</translation>
+    </message>
+    <message>
+        <source>Add copied files</source>
+        <translation>添加已复制的文件</translation>
+    </message>
+    <message>
+        <source>Remove</source>
+        <translation>移除</translation>
+    </message>
+    <message>
+        <source>Send selection</source>
+        <translation>发送选中项</translation>
+    </message>
+    <message>
+        <source>Send next file copy</source>
+        <translation>发送下次文件复制</translation>
+    </message>
+    <message>
+        <source>Receive…</source>
+        <translation>接收…</translation>
+    </message>
+    <message>
+        <source>Cancel</source>
+        <translation>取消</translation>
+    </message>
+    <message>
+        <source>Put received files on the clipboard if it stays unchanged</source>
+        <translation>剪贴板未变动时自动放入收到的文件</translation>
+    </message>
+    <message>
+        <source>Copy received files</source>
+        <translation>复制收到的文件</translation>
+    </message>
+    <message>
+        <source>Open received folder</source>
+        <translation>打开接收目录</translation>
+    </message>
+    <message>
+        <source>Select files to send</source>
+        <translation>选择要发送的文件</translation>
+    </message>
+    <message>
+        <source>Select a folder to send</source>
+        <translation>选择要发送的文件夹</translation>
+    </message>
+    <message>
+        <source>The clipboard has no local file selection.</source>
+        <translation>剪贴板里没有本机文件。</translation>
+    </message>
+    <message>
+        <source>Clipboard capture expired.</source>
+        <translation>等待复制的时间已过。</translation>
+    </message>
+    <message>
+        <source>Verify the two fingerprints on both computers. Start Receive before sending.</source>
+        <translation>在两台电脑核对指纹，先启动接收再发送。</translation>
+    </message>
+    <message>
+        <source>Cancelling…</source>
+        <translation>正在取消…</translation>
+    </message>
+    <message>
+        <source>Clipboard capture cancelled.</source>
+        <translation>已取消等待复制。</translation>
+    </message>
+    <message>
+        <source>Choose where to save received files</source>
+        <translation>选择接收文件的保存位置</translation>
+    </message>
+    <message>
+        <source>Copy a file or folder in your file manager within 90 seconds.</source>
+        <translation>请在 90 秒内通过文件管理器复制文件或文件夹。</translation>
+    </message>
+    <message>
+        <source>Enter a verified peer fingerprint, an IP address and two distinct ports.</source>
+        <translation>请输入已核对的对端指纹、IP 地址和两个不同的端口。</translation>
+    </message>
+    <message>
+        <source>Preparing file selection…</source>
+        <translation>正在准备选中的文件…</translation>
+    </message>
+    <message>
+        <source>Opening the receive port…</source>
+        <translation>正在开启接收端口…</translation>
+    </message>
+    <message>
+        <source>Transferring and verifying files…</source>
+        <translation>正在传输和校验文件…</translation>
+    </message>
+    <message>
+        <source>Waiting for the verified peer to send files…</source>
+        <translation>正在等待已授权的对端发送文件…</translation>
+    </message>
+    <message>
+        <source>The receiver confirmed the transfer.</source>
+        <translation>接收端已确认传输完成。</translation>
+    </message>
+    <message>
+        <source>Verified files are ready in the received folder.</source>
+        <translation>文件已通过校验并保存到接收目录。</translation>
+    </message>
+    <message>
+        <source>A received file or folder is no longer available.</source>
+        <translation>有接收的文件或文件夹已不可用。</translation>
+    </message>
+    <message>
+        <source>Files are on the clipboard. Paste in your file manager.</source>
+        <translation>文件已放入剪贴板。请在文件管理器粘贴。</translation>
     </message>
 </context>
 <context>

@@ -20,6 +20,10 @@
 #include "dialogs/ServerConfigDialog.h"
 #include "dialogs/SettingsDialog.h"
 
+#ifdef DESKFLOW_ENHANCED
+#include "dialogs/FileTransferDialog.h"
+#endif
+
 #include "common/PlatformInfo.h"
 #include "common/Settings.h"
 #include "common/UrlConstants.h"
@@ -670,6 +674,18 @@ void MainWindow::createMenuBar()
   m_menuFile->addAction(m_actionStartCore);
   m_menuFile->addAction(m_actionRestartCore);
   m_menuFile->addAction(m_actionStopCore);
+#ifdef DESKFLOW_ENHANCED
+  m_menuFile->addAction(tr("Enhanced File Transfer…"), this, [this] {
+    auto *dialog = findChild<FileTransferDialog *>();
+    if (!dialog) {
+      dialog = new FileTransferDialog(this);
+      dialog->setAttribute(Qt::WA_DeleteOnClose);
+    }
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+  });
+#endif
   m_menuFile->addSeparator();
   m_menuFile->addAction(m_actionQuit);
 
