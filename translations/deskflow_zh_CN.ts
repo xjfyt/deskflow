@@ -2001,6 +2001,46 @@ Enabling this setting will disable the server config GUI.</source>
         <source>Drop files or folders here to send</source>
         <translation>拖入文件或文件夹以发送</translation>
     </message>
+    <message>
+        <source>Resume a single file (enable on both computers)</source>
+        <translation>单文件断点续传（两端都要勾选）</translation>
+    </message>
+    <message>
+        <source>Discard resume checkpoint…</source>
+        <translation>清除续传检查点…</translation>
+    </message>
+    <message>
+        <source>Choose the destination with the resume checkpoint</source>
+        <translation>选择保存了续传检查点的接收目录</translation>
+    </message>
+    <message>
+        <source>Discard resume checkpoint?</source>
+        <translation>清除续传检查点？</translation>
+    </message>
+    <message>
+        <source>Discard the saved progress in %1? Verified files in completed folders will be kept.</source>
+        <translation>清除 %1 中保存的传输进度？已完成批次中的校验通过文件会保留。</translation>
+    </message>
+    <message>
+        <source>The resume checkpoint was discarded.</source>
+        <translation>续传检查点已清除。</translation>
+    </message>
+    <message>
+        <source>This destination has no resume checkpoint.</source>
+        <translation>此接收目录没有续传检查点。</translation>
+    </message>
+    <message>
+        <source>Select exactly one regular file to resume.</source>
+        <translation>请只选择一个普通文件进行断点续传。</translation>
+    </message>
+    <message>
+        <source>Verifying the source SHA-256 before connecting…</source>
+        <translation>正在连接前校验源文件的 SHA-256…</translation>
+    </message>
+    <message>
+        <source>Resumed at %L1 bytes.</source>
+        <translation>已从 %L1 字节处恢复。</translation>
+    </message>
 </context>
 <context>
     <name>i18n</name>

@@ -42,6 +42,7 @@ ReceivedFiles receiveFiles(
     const TransferOptions &options, const QString &directory, const std::atomic_bool &cancelled,
     const TransferProgress &progress = {}, const std::function<void()> &listening = {}
 );
-void discardResumeCheckpoint(const QString &directory);
+// Returns whether a checkpoint was removed.
+bool discardResumeCheckpoint(const QString &directory);
 
 } // namespace deskflow::enhanced

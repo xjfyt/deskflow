@@ -460,6 +460,15 @@ QString canonicalDestination(const QString &directory)
   return destination.canonicalFilePath();
 }
 
+void checkDestinationSpace(const QString &directory, quint64 bytesNeeded)
+{
+  const QStorageInfo storage(directory);
+  if (storage.isReady() && storage.bytesAvailable() >= 0 &&
+      static_cast<quint64>(storage.bytesAvailable()) < bytesNeeded) {
+    throw Error(QCoreApplication::translate("Enhanced", "There is not enough free space to receive this selection."));
+  }
+}
+
 class ResumeCheckpoint
 {
 public:
@@ -490,6 +499,7 @@ public:
     checkRoot();
     const QFileInfo path(m_checkpoint.path());
     if (!path.exists() && !path.isSymLink()) {
+      checkDestinationSpace(m_root.path(), entry.size);
       StagingDirectory fresh(m_root.path(), m_rootStamp);
       const QDir freshDir(fresh.path());
       QSaveFile metadata(freshDir.filePath(QStringLiteral("metadata")));
@@ -543,12 +553,12 @@ public:
       m_root.rmdir(m_checkpoint.path());
   }
 
-  void discard()
+  bool discard()
   {
     checkRoot();
     const QFileInfo path(m_checkpoint.path());
     if (!path.exists() && !path.isSymLink())
-      return;
+      return false;
     m_checkpointStamp = stampPath(m_checkpoint.path(), true);
     if (!m_checkpointStamp)
       throw Error(invalidCheckpoint());
@@ -574,6 +584,7 @@ public:
         !m_root.rmdir(m_checkpoint.path())) {
       throw Error(invalidCheckpoint());
     }
+    return true;
   }
 
   QFile file;
@@ -981,11 +992,7 @@ ReceivedFiles receiveFiles(
     offset = checkpoint->retainedSize(total);
   }
 
-  const QStorageInfo storage(canonical);
-  if (storage.isReady() && storage.bytesAvailable() >= 0 &&
-      static_cast<quint64>(storage.bytesAvailable()) < total - offset) {
-    throw Error(QCoreApplication::translate("Enhanced", "There is not enough free space to receive this selection."));
-  }
+  checkDestinationSpace(canonical, total - offset);
   if (checkpoint) {
     auto &file = checkpoint->file;
     if (static_cast<quint64>(file.size()) != offset && !file.resize(static_cast<qint64>(offset)))
@@ -1049,14 +1056,14 @@ ReceivedFiles receiveFiles(
   return {published, selection, dropHandoff};
 }
 
-void discardResumeCheckpoint(const QString &directory)
+bool discardResumeCheckpoint(const QString &directory)
 {
   const auto canonical = canonicalDestination(directory);
   const auto stamp = stampPath(canonical, true);
   if (!stamp)
     throw Error(QCoreApplication::translate("Enhanced", "Could not resolve the destination folder."));
   ResumeCheckpoint checkpoint(canonical, *stamp);
-  checkpoint.discard();
+  return checkpoint.discard();
 }
 
 } // namespace deskflow::enhanced

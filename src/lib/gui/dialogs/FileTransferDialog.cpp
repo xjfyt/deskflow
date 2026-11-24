@@ -22,6 +22,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QMimeData>
 #include <QPointer>
 #include <QProgressBar>
@@ -261,6 +262,12 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   layout->addWidget(m_autoPublish);
   m_allowFileDrop = new QCheckBox(tr("Accept file drops for local placement"));
   layout->addWidget(m_allowFileDrop);
+  auto *resumeActions = new QHBoxLayout;
+  m_resume = new QCheckBox(tr("Resume a single file (enable on both computers)"));
+  m_discardResume = new QPushButton(tr("Discard resume checkpoint…"));
+  resumeActions->addWidget(m_resume, 1);
+  resumeActions->addWidget(m_discardResume);
+  layout->addLayout(resumeActions);
   m_progress = new QProgressBar;
   m_progress->setRange(0, 100);
   layout->addWidget(m_progress);
@@ -268,6 +275,10 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   m_status->setWordWrap(true);
   m_status->setTextFormat(Qt::PlainText);
   layout->addWidget(m_status);
+  m_resumeOffset = new QLabel;
+  m_resumeOffset->setWordWrap(true);
+  layout->addWidget(m_resumeOffset);
+  m_resumeOffset->hide();
 
   m_receivedPanel = new QWidget;
   auto *receivedLayout = new QVBoxLayout(m_receivedPanel);
@@ -326,6 +337,8 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   connect(m_arm, &QPushButton::clicked, this, [this] { armSend(ArmedAction::Clipboard); });
   connect(m_armDrop, &QPushButton::clicked, this, [this] { armSend(ArmedAction::FileDrop); });
   connect(m_receive, &QPushButton::clicked, this, &FileTransferDialog::receive);
+  connect(m_resume, &QCheckBox::toggled, this, &FileTransferDialog::refreshActions);
+  connect(m_discardResume, &QPushButton::clicked, this, &FileTransferDialog::discardResume);
   connect(m_cancel, &QPushButton::clicked, this, &FileTransferDialog::reject);
   connect(m_copy, &QPushButton::clicked, this, &FileTransferDialog::copyReceived);
   connect(m_openFolder, &QPushButton::clicked, this, [this] {
@@ -456,12 +469,47 @@ void FileTransferDialog::addPaths(const QStringList &paths)
 
 void FileTransferDialog::receive()
 {
+  const auto directory =
+      QFileDialog::getExistingDirectory(this, tr("Choose where to save received files"), receiveDirectory());
+  if (directory.isEmpty())
+    return;
+  m_receiveDirectory = directory;
+  start({}, directory);
+}
+
+QString FileTransferDialog::receiveDirectory() const
+{
+  return m_receiveDirectory.isEmpty() ? QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)
+                                      : m_receiveDirectory;
+}
+
+void FileTransferDialog::discardResume()
+{
   const auto directory = QFileDialog::getExistingDirectory(
-      this, tr("Choose where to save received files"),
-      QStandardPaths::writableLocation(QStandardPaths::DownloadLocation)
+      this, tr("Choose the destination with the resume checkpoint"), receiveDirectory()
   );
-  if (!directory.isEmpty())
-    start({}, directory);
+  if (directory.isEmpty())
+    return;
+
+  QMessageBox confirmation(
+      QMessageBox::Question, tr("Discard resume checkpoint?"), QString(), QMessageBox::Yes | QMessageBox::No, this
+  );
+  confirmation.setTextFormat(Qt::PlainText);
+  confirmation.setText(tr("Discard the saved progress in %1? Verified files in completed folders will be kept.")
+                           .arg(QDir::toNativeSeparators(directory)));
+  confirmation.setDefaultButton(QMessageBox::No);
+  if (confirmation.exec() != QMessageBox::Yes)
+    return;
+
+  try {
+    m_resumeOffset->hide();
+    m_status->setText(
+        enhanced::discardResumeCheckpoint(directory) ? tr("The resume checkpoint was discarded.")
+                                                     : tr("This destination has no resume checkpoint.")
+    );
+  } catch (const std::exception &error) {
+    m_status->setText(QString::fromUtf8(error.what()));
+  }
 }
 
 void FileTransferDialog::sendSelection()
@@ -512,7 +560,12 @@ enhanced::TransferOptions FileTransferDialog::options() const
   const QHostAddress ip(m_address->text().trimmed());
   if (pin.isEmpty() || pin == m_identity.fingerprint || ip.isNull() || m_controlPort->value() == m_dataPort->value())
     throw enhanced::Error(tr("Enter a verified peer fingerprint, an IP address and two distinct ports."));
-  return {m_identity, pin, ip, static_cast<quint16>(m_controlPort->value()), static_cast<quint16>(m_dataPort->value())};
+  return {m_identity,
+          pin,
+          ip,
+          static_cast<quint16>(m_controlPort->value()),
+          static_cast<quint16>(m_dataPort->value()),
+          m_resume->isChecked()};
 }
 
 void FileTransferDialog::start(const QStringList &sources, const QString &destination, SendMethod method)
@@ -522,6 +575,8 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
   enhanced::TransferOptions transfer;
   try {
     transfer = options();
+    if (transfer.resume && destination.isEmpty() && (sources.size() != 1 || !QFileInfo(sources.front()).isFile()))
+      throw enhanced::Error(tr("Select exactly one regular file to resume."));
   } catch (const enhanced::Error &error) {
     m_status->setText(error.message);
     refreshActions();
@@ -530,28 +585,41 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
 
   const auto clipboardRevision = m_clipboardRevision;
   const bool autoPublish = m_autoPublish->isChecked();
-  transfer.dropHandoff = destination.isEmpty() ? method == SendMethod::FileDrop : m_allowFileDrop->isChecked();
+  if (!transfer.resume)
+    transfer.dropHandoff = destination.isEmpty() ? method == SendMethod::FileDrop : m_allowFileDrop->isChecked();
   const bool copyCutFiles = method == SendMethod::CutFiles;
   const auto transferStatus =
       copyCutFiles ? tr("Sending cut files as copies…") : tr("Transferring and verifying files…");
   m_cancelled.store(false, std::memory_order_relaxed);
+  m_resumeOffset->hide();
   m_progress->setRange(0, 0);
-  if (destination.isEmpty())
-    m_status->setText(copyCutFiles ? transferStatus : tr("Preparing file selection…"));
-  else
+  if (!destination.isEmpty())
     m_status->setText(tr("Opening the receive port…"));
+  else if (transfer.resume)
+    m_status->setText(tr("Verifying the source SHA-256 before connecting…"));
+  else
+    m_status->setText(copyCutFiles ? transferStatus : tr("Preparing file selection…"));
 
   m_worker = QThread::create([this, transfer, sources, destination, clipboardRevision, autoPublish, transferStatus] {
     QElapsedTimer timer;
     timer.start();
+    bool reportedProgress = false;
     const auto progress = [&](quint64 done, quint64 total) {
-      if (done != 0 && done != total && timer.elapsed() < 100)
+      if (reportedProgress && done != total && timer.elapsed() < 100)
         return;
+      const auto resumedAt = !reportedProgress && transfer.resume ? done : 0;
+      reportedProgress = true;
       timer.restart();
       const int percent = total == 0 ? 0 : static_cast<int>(100 * done / total);
       QMetaObject::invokeMethod(
           this,
-          [this, percent, transferStatus] {
+          [this, percent, resumedAt, transferStatus] {
+            if (m_cancelled.load(std::memory_order_relaxed))
+              return;
+            if (resumedAt > 0) {
+              m_resumeOffset->setText(tr("Resumed at %L1 bytes.").arg(resumedAt));
+              m_resumeOffset->show();
+            }
             m_progress->setRange(0, 100);
             m_progress->setValue(percent);
             m_status->setText(transferStatus);
@@ -568,7 +636,11 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
       } else {
         received = enhanced::receiveFiles(transfer, destination, m_cancelled, progress, [this] {
           QMetaObject::invokeMethod(
-              this, [this] { m_status->setText(tr("Waiting for the verified peer to send files…")); },
+              this,
+              [this] {
+                if (!m_cancelled.load(std::memory_order_relaxed))
+                  m_status->setText(tr("Waiting for the verified peer to send files…"));
+              },
               Qt::QueuedConnection
           );
         });
@@ -682,6 +754,7 @@ void FileTransferDialog::refreshActions()
   const bool available = !m_worker && m_armed == ArmedAction::None;
   const bool waitingForDrop = m_armed == ArmedAction::FileDrop;
   const bool configured = available && !m_identity.fingerprint.isEmpty();
+  const bool resume = m_resume->isChecked();
   m_settings->setEnabled(available);
   m_selectionActions->setEnabled(available);
   const auto heading = waitingForDrop ? tr("Drop files or folders here to send") : tr("Files and folders to send");
@@ -691,13 +764,15 @@ void FileTransferDialog::refreshActions()
   m_receivedItems->setEnabled(available);
   m_send->setEnabled(configured && m_selection->count() > 0);
   m_receive->setEnabled(configured);
-  m_arm->setEnabled(configured);
-  m_armDrop->setEnabled(configured);
+  m_arm->setEnabled(configured && !resume);
+  m_armDrop->setEnabled(configured && !resume);
   m_cancel->setEnabled(!available);
   m_copy->setEnabled(available && !m_received.selection.isEmpty());
   m_openFolder->setEnabled(available && !m_received.directory.isEmpty());
   m_autoPublish->setEnabled(available);
-  m_allowFileDrop->setEnabled(available);
+  m_allowFileDrop->setEnabled(available && !resume);
+  m_resume->setEnabled(available);
+  m_discardResume->setEnabled(available);
 }
 
 } // namespace deskflow::gui

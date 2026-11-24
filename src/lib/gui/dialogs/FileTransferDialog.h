@@ -55,6 +55,7 @@ private:
 
   void addPaths(const QStringList &paths);
   void receive();
+  void discardResume();
   void sendSelection();
   void armSend(ArmedAction action);
   void clipboardChanged();
@@ -64,10 +65,12 @@ private:
   std::unique_ptr<QMimeData> receivedMime(const QStringList &paths);
   void copyReceived();
   void refreshActions();
+  QString receiveDirectory() const;
   enhanced::TransferOptions options() const;
 
   enhanced::PeerIdentity m_identity;
   enhanced::ReceivedFiles m_received;
+  QString m_receiveDirectory;
   QLineEdit *m_address = nullptr;
   QLineEdit *m_peer = nullptr;
   QSpinBox *m_controlPort = nullptr;
@@ -80,6 +83,8 @@ private:
   QListWidget *m_receivedItems = nullptr;
   QCheckBox *m_autoPublish = nullptr;
   QCheckBox *m_allowFileDrop = nullptr;
+  QCheckBox *m_resume = nullptr;
+  QPushButton *m_discardResume = nullptr;
   QPushButton *m_send = nullptr;
   QPushButton *m_receive = nullptr;
   QPushButton *m_arm = nullptr;
@@ -88,6 +93,7 @@ private:
   QPushButton *m_copy = nullptr;
   QPushButton *m_openFolder = nullptr;
   QLabel *m_status = nullptr;
+  QLabel *m_resumeOffset = nullptr;
   QProgressBar *m_progress = nullptr;
   QThread *m_worker = nullptr;
   QTimer *m_armTimer = nullptr;

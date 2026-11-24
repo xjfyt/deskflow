@@ -274,7 +274,8 @@ private Q_SLOTS:
       QVERIFY(!resumed.receiveError.isEmpty());
       QVERIFY(!resumed.initialOffset);
       QCOMPARE(QFileInfo(payload).size(), ChunkSize);
-      discardResumeCheckpoint(destination);
+      QVERIFY(discardResumeCheckpoint(destination));
+      QVERIFY(!discardResumeCheckpoint(destination));
       QVERIFY(QDir(destination).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden));
     } else {
       QVERIFY2(resumed.sendError.isEmpty(), qPrintable(resumed.sendError));
