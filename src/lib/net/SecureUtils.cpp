@@ -14,9 +14,8 @@
 #include <openssl/x509.h>
 #include <openssl/x509v3.h>
 
-#include <QFile>
+#include <QSaveFile>
 #include <algorithm>
-#include <filesystem>
 #include <stdexcept>
 
 namespace deskflow {
@@ -93,23 +92,25 @@ void generatePemSelfSignedCert(const QString &path, int keyLength)
   X509_set_issuer_name(cert, name);
   X509_NAME_free(name);
 
-  X509_sign(cert, privateKey, EVP_sha256());
-  const QFile file(path);
-  const std::filesystem::path fsPath = file.filesystemFileName();
+  if (X509_sign(cert, privateKey, EVP_sha256()) <= 0)
+    throw std::runtime_error("could not sign certificate");
 
-#if defined(Q_OS_WIN)
-  auto fp = _wfopen(fsPath.native().c_str(), L"w");
-#else
-  auto fp = std::fopen(fsPath.native().c_str(), "w");
-#endif
+  // A memory BIO leaves file I/O to Qt and avoids OpenSSL's Windows stdio ABI bridge.
+  auto *pem = BIO_new(BIO_s_mem());
+  if (!pem)
+    throw std::runtime_error("could not allocate certificate output");
+  auto freePem = finally([pem]() { BIO_free(pem); });
+  if (PEM_write_bio_PrivateKey(pem, privateKey, nullptr, nullptr, 0, nullptr, nullptr) != 1 ||
+      PEM_write_bio_X509(pem, cert) != 1)
+    throw std::runtime_error("could not encode certificate and private key");
 
-  if (!fp) {
-    throw std::runtime_error("could not open certificate output path");
-  }
-  auto fileClose = finally([fp]() { std::fclose(fp); });
-
-  PEM_write_PrivateKey(fp, privateKey, nullptr, nullptr, 0, nullptr, nullptr);
-  PEM_write_X509(fp, cert);
+  const char *data = nullptr;
+  const auto length = BIO_get_mem_data(pem, &data);
+  QSaveFile file(path);
+  if (length <= 0 || !file.open(QIODevice::WriteOnly) ||
+      !file.setPermissions(QFileDevice::ReadOwner | QFileDevice::WriteOwner) || file.write(data, length) != length ||
+      !file.commit())
+    throw std::runtime_error("could not write certificate output file");
 }
 
 QString formatSSLFingerprintColumns(const QByteArray &fingerprint)

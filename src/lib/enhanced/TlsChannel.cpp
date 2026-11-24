@@ -14,10 +14,8 @@
 #include <QFileInfo>
 #include <QLockFile>
 #include <QNetworkProxy>
-#include <QSaveFile>
 #include <QTcpServer>
 #include <QTcpSocket>
-#include <QTemporaryFile>
 #include <QTimer>
 
 #include <openssl/err.h>
@@ -33,7 +31,6 @@ namespace {
 constexpr int SocketBufferSize = 128 * 1024;
 constexpr int MaxPemSize = 64 * 1024;
 constexpr int MaxWaitSlice = 100;
-constexpr auto PrivateFile = QFileDevice::ReadOwner | QFileDevice::WriteOwner;
 
 using Bio = std::unique_ptr<BIO, decltype(&BIO_free)>;
 using Cert = std::unique_ptr<X509, decltype(&X509_free)>;
@@ -114,18 +111,10 @@ PeerIdentity loadIdentity(const QString &path, bool create)
     if (!lock.tryLock(500))
       throw Error(QCoreApplication::translate("Enhanced", "The enhanced identity is in use. Try again."));
     if (!QFileInfo::exists(path)) {
-      QTemporaryFile temporary(directory.filePath(QStringLiteral(".identity-XXXXXX")));
-      if (!temporary.open() || !temporary.setPermissions(PrivateFile))
+      try {
+        generatePemSelfSignedCert(path);
+      } catch (const std::exception &) {
         throw Error(QCoreApplication::translate("Enhanced", "Could not create the enhanced identity."));
-      temporary.close();
-      generatePemSelfSignedCert(temporary.fileName());
-      const auto pem = readPem(temporary.fileName());
-      if (!readCertificate(pem))
-        throw Error(QCoreApplication::translate("Enhanced", "Could not create the enhanced identity."));
-      QSaveFile output(path);
-      if (!output.open(QIODevice::WriteOnly) || !output.setPermissions(PrivateFile) ||
-          output.write(pem) != pem.size() || !output.commit()) {
-        throw Error(QCoreApplication::translate("Enhanced", "Could not save the enhanced identity."));
       }
     }
   }
