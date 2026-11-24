@@ -1,0 +1,104 @@
+# SPDX-FileCopyrightText: (C) 2026 Deskflow Enhanced contributors
+# SPDX-License-Identifier: MIT
+
+name: Enhanced build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: ${{ matrix.target.name }}
+    runs-on: ${{ matrix.target.runner }}
+    container: ${{ matrix.target.container }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - name: Windows x64
+            runner: windows-2022
+            arch: amd64
+            triplet: x64-windows-release
+            qt: 6.9.3
+          - name: Windows ARM64
+            runner: windows-11-arm
+            arch: arm64
+            triplet: arm64-windows
+            qt: '6.12'
+          - name: macOS Apple Silicon
+            runner: macos-15
+            qt: 6.9.3
+          - name: macOS Intel
+            runner: macos-15-intel
+            qt: 6.9.3
+          - name: Debian x64
+            runner: ubuntu-latest
+            container: debian:stable-slim
+            like: debian
+          - name: Debian ARM64
+            runner: ubuntu-24.04-arm
+            container: debian:stable-slim
+            like: debian
+    steps:
+      - name: Install checkout tools in the Linux container
+        if: matrix.target.like == 'debian'
+        shell: bash
+        run: |
+          apt-get update -qq
+          apt-get install -y -qq ca-certificates git
+
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up MSVC
+        if: runner.os == 'Windows'
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: ${{ matrix.target.arch }}
+
+      - name: Install Deskflow dependencies
+        id: dependencies
+        uses: ./.github/actions/install-dependencies
+        with:
+          qt-version: ${{ matrix.target.qt }}
+          vcpkg-triplet: ${{ matrix.target.triplet }}
+          like: ${{ matrix.target.like }}
+
+      - name: Compile enhanced binaries and verification targets
+        shell: bash
+        run: |
+          cmake -S . -B build/enhanced -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ENHANCED=ON -DBUILD_TESTS=ON -DSKIP_BUILD_TESTS=ON \
+            -DBUILD_INSTALLER=OFF -DBUILD_OSX_BUNDLE=OFF \
+            ${{ steps.dependencies.outputs.vcpkg-cmake-config }}
+          cmake --build build/enhanced --parallel 4
+
+      - name: Compile the Windows classic fallback
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake -S . -B build/classic -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_ENHANCED=OFF -DBUILD_TESTS=OFF -DBUILD_INSTALLER=OFF \
+            ${{ steps.dependencies.outputs.vcpkg-cmake-config }}
+          cmake --build build/classic --parallel 4
+
+      - name: Stage Windows package
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cmake --install build/enhanced --prefix build/portable
+          printf '%s\n' "$GITHUB_SHA" > build/portable/BUILD_COMMIT.txt
+
+      - name: Upload Windows portable files
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deskflow-enhanced-windows-${{ matrix.target.arch }}
+          path: build/portable
+          if-no-files-found: error

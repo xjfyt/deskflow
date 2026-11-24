@@ -28,7 +28,8 @@ install(
 )
 
 if(BUILD_ENHANCED)
-  install(FILES Enhanced.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+  install(FILES Enhanced.md ENHANCED_AUDIT.md UPSTREAM_SYNC.md DESTINATION ${CMAKE_INSTALL_DOCDIR})
+  install(FILES validation/Get-DeskflowFileManifest.ps1 DESTINATION ${CMAKE_INSTALL_DOCDIR}/validation)
 endif()
 
 # Make sure that help docs are moved.

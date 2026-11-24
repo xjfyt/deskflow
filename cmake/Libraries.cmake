@@ -98,6 +98,8 @@ endmacro()
 # X.org/X11 for Linux, BSD, etc
 #
 macro(configure_xorg_libs)
+  find_package(X11 REQUIRED)
+
 
   # Set include dir for BSD-derived systems
   set(CMAKE_REQUIRED_INCLUDES "/usr/local/include")
