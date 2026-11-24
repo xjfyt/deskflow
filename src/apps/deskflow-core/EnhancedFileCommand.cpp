@@ -41,11 +41,12 @@ int fileCommand(int argc, char **argv)
   QCommandLineParser parser;
   parser.setApplicationDescription(QStringLiteral(
       "Deskflow Enhanced file transfer\n"
-      "Usage: deskflow-core --enhanced-files <identity|send|receive> [options] [paths...]\n"
-      "Send uses the receiver IP. Receive binds to an explicit local IP and accepts one transfer."
+      "Usage: deskflow-core --enhanced-files <identity|send|receive|discard-resume> [options] [paths...]\n"
+      "Send uses the receiver IP. Receive binds to an explicit local IP and accepts one transfer.\n"
+      "Use --resume on both peers for one file. An interrupted receive retains a checkpoint in the destination."
   ));
   parser.addHelpOption();
-  parser.addPositionalArgument(QStringLiteral("mode"), QStringLiteral("identity, send or receive"));
+  parser.addPositionalArgument(QStringLiteral("mode"), QStringLiteral("identity, send, receive or discard-resume"));
   parser.addPositionalArgument(
       QStringLiteral("paths"), QStringLiteral("Source files/folders, or one existing destination folder."),
       QStringLiteral("[paths...]")
@@ -69,7 +70,10 @@ int fileCommand(int argc, char **argv)
       QStringLiteral("data-port"), QStringLiteral("Enhanced file data port."), QStringLiteral("port"),
       QString::number(DataPort)
   );
-  parser.addOptions({certificate, peer, address, controlPort, dataPort});
+  const QCommandLineOption resume(
+      QStringLiteral("resume"), QStringLiteral("Enable one authenticated resumable file on both peers.")
+  );
+  parser.addOptions({certificate, peer, address, controlPort, dataPort, resume});
   auto arguments = QCoreApplication::arguments();
   arguments.removeAt(1);
   parser.process(arguments);
@@ -78,29 +82,49 @@ int fileCommand(int argc, char **argv)
   try {
     const auto positions = parser.positionalArguments();
     const auto mode = positions.value(0);
+    if (mode == QStringLiteral("discard-resume")) {
+      if (positions.size() != 2 || !parser.optionNames().isEmpty())
+        throw Error(QStringLiteral("Specify only the destination directory after discard-resume."));
+      discardResumeCheckpoint(positions.at(1));
+      output << "No resume checkpoint remains in the destination." << Qt::endl;
+      return 0;
+    }
     const auto path = parser.value(certificate);
     if (path.isEmpty())
       throw Error(QStringLiteral("--certificate is required."));
     if (mode == QStringLiteral("identity") && positions.size() == 1) {
+      if (parser.isSet(resume))
+        throw Error(QStringLiteral("--resume applies only to send and receive."));
       const auto identity = loadIdentity(path, true);
       output << identity.fingerprint.toHex(':').toUpper() << Qt::endl;
       return 0;
     }
 
     const TransferOptions options{
-        loadIdentity(path), parseFingerprint(parser.value(peer)), QHostAddress(parser.value(address)),
-        port(parser, controlPort), port(parser, dataPort)
+        loadIdentity(path),
+        parseFingerprint(parser.value(peer)),
+        QHostAddress(parser.value(address)),
+        port(parser, controlPort),
+        port(parser, dataPort),
+        parser.isSet(resume)
     };
     std::signal(SIGINT, cancel);
     QElapsedTimer timer;
     timer.start();
+    bool reportedProgress = false;
     const auto progress = [&](quint64 done, quint64 total) {
-      if (done == 0 || done == total || timer.elapsed() >= 500) {
+      if (!reportedProgress || done == total || timer.elapsed() >= 500) {
         output << done << " / " << total << " bytes" << Qt::endl;
+        reportedProgress = true;
         timer.restart();
       }
     };
     if (mode == QStringLiteral("send") && positions.size() >= 2) {
+      if (options.resume) {
+        if (positions.size() != 2)
+          throw Error(QStringLiteral("--resume requires exactly one source file."));
+        output << "Verifying the source SHA-256 before connecting." << Qt::endl;
+      }
       sendFiles(options, positions.sliced(1), cancelled, progress);
       output << "Receiver confirmed the transfer." << Qt::endl;
       return 0;
@@ -112,7 +136,9 @@ int fileCommand(int argc, char **argv)
       output << received.directory << Qt::endl;
       return 0;
     }
-    throw Error(QStringLiteral("Specify identity, send with source paths, or receive with one destination path."));
+    throw Error(
+        QStringLiteral("Specify identity, send with source paths, receive or discard-resume with one destination path.")
+    );
   } catch (const std::exception &error) {
     QTextStream(stderr) << QString::fromUtf8(error.what()) << Qt::endl;
     return 1;

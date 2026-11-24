@@ -32,7 +32,10 @@ enum class Message : quint16
   Finish,
   Committed,
   InputPoll,
-  InputState
+  InputState,
+  ResumeIdentity,
+  ResumeOffset,
+  ResumeVerified
 };
 
 struct Header

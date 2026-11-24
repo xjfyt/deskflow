@@ -50,7 +50,7 @@ Header decodeHeader(QByteArrayView bytes, quint64 sequence)
   const auto size = qFromBigEndian<quint32>(bytes.data() + 12);
   if (qFromBigEndian<quint16>(bytes.data() + 10) != 0 || size > MaxPayload || sequence == 0 ||
       qFromBigEndian<quint64>(bytes.data() + 16) != sequence || type < static_cast<quint16>(Message::Hello) ||
-      type > static_cast<quint16>(Message::InputState)) {
+      type > static_cast<quint16>(Message::ResumeVerified)) {
     throw Error(invalidFrame());
   }
 

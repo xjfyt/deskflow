@@ -16,6 +16,8 @@
 #include <QThread>
 #include <QtTest>
 
+#include <optional>
+
 using namespace deskflow::enhanced;
 
 class EnhancedFileTransferTests : public QObject
@@ -29,7 +31,10 @@ class EnhancedFileTransferTests : public QObject
     ReceiverPinRejected,
     UnauthenticatedProbe,
     ReceiveCancelled,
-    SourceReplaced
+    SourceReplaced,
+    DropAllowed,
+    DropDenied,
+    DropReceiverOnly
   };
 
 private Q_SLOTS:
@@ -42,6 +47,9 @@ private Q_SLOTS:
     QTest::newRow("unauthenticated probe does not consume listener") << int(UnauthenticatedProbe);
     QTest::newRow("receiver cancellation removes staging") << int(ReceiveCancelled);
     QTest::newRow("same-size replacement with original timestamp is rejected") << int(SourceReplaced);
+    QTest::newRow("both peers enable local drop placement") << int(DropAllowed);
+    QTest::newRow("receiver must opt in to local drop placement") << int(DropDenied);
+    QTest::newRow("drop-enabled receiver accepts ordinary sends") << int(DropReceiverOnly);
   }
 
   void transfersAreAuthenticatedAndAtomic()
@@ -74,16 +82,19 @@ private Q_SLOTS:
 
     const QByteArray wrongPin(TokenSize, '\x00');
     const TransferOptions sender{
-        a, scenario == ReceiverPinRejected ? wrongPin : b.fingerprint, QHostAddress::LocalHost, control, data
+        a,     scenario == ReceiverPinRejected ? wrongPin : b.fingerprint, QHostAddress::LocalHost, control, data,
+        false, scenario == DropAllowed || scenario == DropDenied
     };
     const TransferOptions receiver{
-        b, scenario == SenderPinRejected ? wrongPin : a.fingerprint, QHostAddress::LocalHost, control, data
+        b,     scenario == SenderPinRejected ? wrongPin : a.fingerprint, QHostAddress::LocalHost, control, data,
+        false, scenario == DropAllowed || scenario == DropReceiverOnly
     };
     const auto destination = root.filePath(QStringLiteral("received"));
     std::atomic_bool senderCancelled = false;
     std::atomic_bool receiverCancelled = false;
     bool halfwayCancelled = false;
     bool sourceReplaced = false;
+    bool dropConfirmed = false;
     QSemaphore ready;
     ReceivedFiles received;
     QString receiveError;
@@ -115,7 +126,7 @@ private Q_SLOTS:
           probe.abort();
         }
         const auto selected = scenario == SourceReplaced ? source.fileName() : sourceDirectory;
-        sendFiles(sender, {selected}, senderCancelled, [&](quint64 done, quint64) {
+        dropConfirmed = sendFiles(sender, {selected}, senderCancelled, [&](quint64 done, quint64) {
           if (scenario != SourceReplaced || done != 0)
             return;
           QFile replacement(source.fileName() + QStringLiteral(".replacement"));
@@ -143,7 +154,8 @@ private Q_SLOTS:
     }
     worker->wait();
 
-    if (scenario != ValidPins && scenario != UnauthenticatedProbe) {
+    if (scenario != ValidPins && scenario != UnauthenticatedProbe && scenario != DropAllowed &&
+        scenario != DropReceiverOnly) {
       if (scenario == ReceiveCancelled)
         QVERIFY(halfwayCancelled);
       if (scenario == SourceReplaced)
@@ -155,6 +167,8 @@ private Q_SLOTS:
     }
     QVERIFY2(sendError.isEmpty(), qPrintable(sendError));
     QVERIFY2(receiveError.isEmpty(), qPrintable(receiveError));
+    QCOMPARE(dropConfirmed, scenario == DropAllowed);
+    QCOMPARE(received.dropHandoff, scenario == DropAllowed);
     QCOMPARE(received.selection.size(), 1);
     const QDir selection(received.selection.first());
     QVERIFY(selection.exists(QStringLiteral("空目录")));
@@ -162,6 +176,118 @@ private Q_SLOTS:
     QVERIFY(result.open(QIODevice::ReadOnly));
     QCOMPARE(result.readAll(), content);
     QVERIFY(source.exists());
+  }
+
+  void resumesOnlyAVerifiedPrefix_data()
+  {
+    QTest::addColumn<bool>("corrupt");
+    QTest::newRow("verified checkpoint resumes at first missing chunk") << false;
+    QTest::newRow("changed checkpoint is rejected and explicitly discarded") << true;
+  }
+
+  void resumesOnlyAVerifiedPrefix()
+  {
+    QFETCH(bool, corrupt);
+    const QTemporaryDir temporary;
+    QVERIFY(temporary.isValid());
+    const QDir root(temporary.path());
+    const auto a = loadIdentity(root.filePath(QStringLiteral("a.pem")), true);
+    const auto b = loadIdentity(root.filePath(QStringLiteral("b.pem")), true);
+    QVERIFY(root.mkdir(QStringLiteral("received")));
+    const auto destination = root.filePath(QStringLiteral("received"));
+    const auto checkpoint = QDir(destination).filePath(QStringLiteral(".deskflow-resume-v1"));
+    QFile source(root.filePath(QStringLiteral("payload.bin")));
+    const QByteArray content = QByteArray(ChunkSize, '\x2b') + QByteArray(ChunkSize + 31, '\x50');
+    QVERIFY(source.open(QIODevice::WriteOnly));
+    QCOMPARE(source.write(content), content.size());
+    source.close();
+
+    QTcpServer controlPort;
+    QTcpServer dataPort;
+    QVERIFY(controlPort.listen(QHostAddress::LocalHost));
+    QVERIFY(dataPort.listen(QHostAddress::LocalHost));
+    const auto control = controlPort.serverPort();
+    const auto data = dataPort.serverPort();
+    controlPort.close();
+    dataPort.close();
+    const TransferOptions sender{a, b.fingerprint, QHostAddress::LocalHost, control, data, true};
+    const TransferOptions receiver{b, a.fingerprint, QHostAddress::LocalHost, control, data, true};
+
+    struct Result
+    {
+      ReceivedFiles files;
+      QString sendError;
+      QString receiveError;
+      std::optional<quint64> initialOffset;
+    };
+    const auto run = [&](bool interrupt) {
+      Result result;
+      std::atomic_bool senderCancelled = false;
+      std::atomic_bool receiverCancelled = false;
+      QSemaphore ready;
+      std::unique_ptr<QThread> worker(QThread::create([&] {
+        try {
+          result.files = receiveFiles(
+              receiver, destination, receiverCancelled,
+              [&](quint64 done, quint64) {
+                if (!result.initialOffset)
+                  result.initialOffset = done;
+                if (interrupt && done >= ChunkSize)
+                  receiverCancelled.store(true);
+              },
+              [&] { ready.release(); }
+          );
+        } catch (const std::exception &error) {
+          result.receiveError = QString::fromUtf8(error.what());
+          ready.release();
+        }
+      }));
+      worker->start();
+      try {
+        if (!ready.tryAcquire(1, 5000))
+          throw Error(QStringLiteral("Receiver did not become ready."));
+        sendFiles(sender, {source.fileName()}, senderCancelled);
+      } catch (const std::exception &error) {
+        result.sendError = QString::fromUtf8(error.what());
+        receiverCancelled.store(true);
+      }
+      worker->wait();
+      return result;
+    };
+
+    const auto interrupted = run(true);
+    QVERIFY(!interrupted.sendError.isEmpty());
+    QVERIFY(!interrupted.receiveError.isEmpty());
+    QCOMPARE(interrupted.initialOffset.value_or(1), 0);
+    const auto payload = QDir(checkpoint).filePath(QStringLiteral("files/payload.bin"));
+    QCOMPARE(QFileInfo(payload).size(), ChunkSize);
+    if (corrupt) {
+      QFile partial(payload);
+      QVERIFY(partial.open(QIODevice::ReadWrite));
+      QCOMPARE(partial.write("x", 1), 1);
+      partial.close();
+    }
+
+    const auto resumed = run(false);
+    if (corrupt) {
+      QVERIFY(!resumed.sendError.isEmpty());
+      QVERIFY(!resumed.receiveError.isEmpty());
+      QVERIFY(!resumed.initialOffset);
+      QCOMPARE(QFileInfo(payload).size(), ChunkSize);
+      discardResumeCheckpoint(destination);
+      QVERIFY(QDir(destination).isEmpty(QDir::AllEntries | QDir::NoDotAndDotDot | QDir::Hidden));
+    } else {
+      QVERIFY2(resumed.sendError.isEmpty(), qPrintable(resumed.sendError));
+      QVERIFY2(resumed.receiveError.isEmpty(), qPrintable(resumed.receiveError));
+      QCOMPARE(resumed.initialOffset.value_or(0), ChunkSize);
+      QCOMPARE(resumed.files.selection.size(), 1);
+      QFile completed(resumed.files.selection.front());
+      QVERIFY(completed.open(QIODevice::ReadOnly));
+      QCOMPARE(completed.readAll(), content);
+      QVERIFY(!QFileInfo::exists(checkpoint));
+    }
+    QVERIFY(source.open(QIODevice::ReadOnly));
+    QCOMPARE(source.readAll(), content);
   }
 };
 

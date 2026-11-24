@@ -20,6 +20,8 @@ struct TransferOptions
   QHostAddress address;
   quint16 controlPort = ControlPort;
   quint16 dataPort = DataPort;
+  bool resume = false;
+  bool dropHandoff = false;
 };
 
 using TransferProgress = std::function<void(quint64 done, quint64 total)>;
@@ -28,10 +30,11 @@ struct ReceivedFiles
 {
   QString directory;
   QStringList selection;
+  bool dropHandoff = false;
 };
 
 // Both entry points block and belong on a worker thread. Callbacks run on that same thread.
-void sendFiles(
+bool sendFiles(
     const TransferOptions &options, const QStringList &paths, const std::atomic_bool &cancelled,
     const TransferProgress &progress = {}
 );
@@ -39,5 +42,6 @@ ReceivedFiles receiveFiles(
     const TransferOptions &options, const QString &directory, const std::atomic_bool &cancelled,
     const TransferProgress &progress = {}, const std::function<void()> &listening = {}
 );
+void discardResumeCheckpoint(const QString &directory);
 
 } // namespace deskflow::enhanced

@@ -9,14 +9,18 @@
 
 #include <QCoreApplication>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
+#include <QLockFile>
+#include <QSaveFile>
 #include <QStorageInfo>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryDir>
 #include <QUuid>
+#include <QtEndian>
 
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
@@ -49,6 +53,16 @@ constexpr int HandshakeTimeout = 5000;
 constexpr int OfferTimeout = 120000;
 constexpr int DataTimeout = 15000;
 constexpr qint64 TransferTimeout = 4 * 60 * 60 * 1000;
+constexpr int ResumePreparationTimeout = 10 * 60 * 1000;
+constexpr char ResumeCapability = 0x04;
+constexpr char DropCapability = 0x08;
+
+enum class Access
+{
+  Inspect,
+  Read,
+  Update
+};
 
 struct SourceStamp
 {
@@ -97,12 +111,15 @@ public:
   std::vector<HANDLE> handles;
 };
 
-HANDLE openWindowsPath(const QString &path, bool directory, bool readData = false)
+HANDLE openWindowsPath(const QString &path, bool directory, Access access = Access::Inspect)
 {
   const auto native = QDir::toNativeSeparators(path);
+  const DWORD rights = access == Access::Inspect ? FILE_READ_ATTRIBUTES
+                       : access == Access::Read  ? GENERIC_READ
+                                                 : GENERIC_READ | GENERIC_WRITE;
   const auto handle = CreateFileW(
-      reinterpret_cast<LPCWSTR>(native.utf16()), readData ? GENERIC_READ : FILE_READ_ATTRIBUTES,
-      readData ? FILE_SHARE_READ : FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+      reinterpret_cast<LPCWSTR>(native.utf16()), rights,
+      access == Access::Inspect ? FILE_SHARE_READ | FILE_SHARE_WRITE : FILE_SHARE_READ, nullptr, OPEN_EXISTING,
       FILE_FLAG_OPEN_REPARSE_POINT | (directory ? FILE_FLAG_BACKUP_SEMANTICS : 0), nullptr
   );
   if (handle == INVALID_HANDLE_VALUE)
@@ -118,7 +135,7 @@ HANDLE openWindowsPath(const QString &path, bool directory, bool readData = fals
   return handle;
 }
 
-HANDLE openSourcePath(const QString &path, bool directory, bool readData = false)
+HANDLE openSourcePath(const QString &path, bool directory, Access access = Access::Inspect)
 {
   QStringList parents;
   QDir parentDirectory = QFileInfo(path).absoluteDir();
@@ -135,7 +152,7 @@ HANDLE openSourcePath(const QString &path, bool directory, bool readData = false
       return INVALID_HANDLE_VALUE;
     directories.handles.push_back(handle);
   }
-  return openWindowsPath(path, directory, readData);
+  return openWindowsPath(path, directory, access);
 }
 
 std::optional<SourceStamp> stampHandle(HANDLE handle)
@@ -170,12 +187,13 @@ std::optional<SourceStamp> stampDescriptor(int descriptor)
   return stampHandle(reinterpret_cast<HANDLE>(_get_osfhandle(descriptor)));
 }
 
-int openSource(const QString &path)
+int openSource(const QString &path, Access access)
 {
-  const auto handle = openSourcePath(path, false, true);
+  const auto handle = openSourcePath(path, false, access);
   if (handle == INVALID_HANDLE_VALUE)
     return -1;
-  const auto descriptor = _open_osfhandle(reinterpret_cast<intptr_t>(handle), _O_RDONLY | _O_BINARY | _O_NOINHERIT);
+  const int mode = access == Access::Update ? _O_RDWR : _O_RDONLY;
+  const auto descriptor = _open_osfhandle(reinterpret_cast<intptr_t>(handle), mode | _O_BINARY | _O_NOINHERIT);
   if (descriptor == -1)
     CloseHandle(handle);
   return descriptor;
@@ -189,16 +207,19 @@ bool publishDirectory(const QString &source, const QString &destination)
   );
 }
 #else
-int openSourcePath(const QString &path, bool directory)
+int openSourcePath(const QString &path, bool directory, Access access = Access::Inspect)
 {
+  if (!QDir::isAbsolutePath(path))
+    return -1;
   const auto components = path.split(u'/', Qt::SkipEmptyParts);
   if (components.isEmpty() && !directory)
     return -1;
   auto current = ::open("/", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   for (qsizetype i = 0; current >= 0 && i < components.size(); ++i) {
     const auto type = (directory || i < components.size() - 1) ? O_DIRECTORY : O_NONBLOCK;
+    const auto mode = type == O_NONBLOCK && access == Access::Update ? O_RDWR : O_RDONLY;
     const auto next =
-        ::openat(current, QFile::encodeName(components[i]).constData(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC | type);
+        ::openat(current, QFile::encodeName(components[i]).constData(), mode | O_NOFOLLOW | O_CLOEXEC | type);
     ::close(current);
     current = next;
   }
@@ -240,9 +261,9 @@ std::optional<SourceStamp> stampDescriptor(int descriptor)
   return stampHandle(descriptor, false);
 }
 
-int openSource(const QString &path)
+int openSource(const QString &path, Access access)
 {
-  return openSourcePath(path, false);
+  return openSourcePath(path, false, access);
 }
 
 bool publishDirectory(const QString &source, const QString &destination)
@@ -370,11 +391,253 @@ Offer buildOffer(const QStringList &paths, const std::atomic_bool &cancelled)
   return offer;
 }
 
+void openTransferFile(QFile &file, const QString &path, Access access)
+{
+  const auto descriptor = openSource(path, access);
+  if (descriptor < 0)
+    throw Error(QCoreApplication::translate("Enhanced", "A selected file could not be opened safely."));
+  const auto mode = access == Access::Update ? QIODevice::ReadWrite | QIODevice::Unbuffered : QIODevice::ReadOnly;
+  if (!file.open(descriptor, mode, QFileDevice::AutoCloseHandle)) {
+#if defined(Q_OS_WIN)
+    _close(descriptor);
+#else
+    ::close(descriptor);
+#endif
+    throw Error(QCoreApplication::translate("Enhanced", "A selected file could not be opened safely."));
+  }
+}
+
+bool isSingleFile(const FileManifest &manifest)
+{
+  return manifest.entries.size() == 1 && !manifest.entries.front().directory;
+}
+
+QByteArray sourceVersion(const SourceStamp &stamp)
+{
+  // No sender-local name, volume number or inode is exposed on the wire.
+  QByteArray version(7 * static_cast<qsizetype>(sizeof(quint64)), Qt::Uninitialized);
+  qToBigEndian(stamp.device, version.data());
+  qToBigEndian(stamp.file, version.data() + 8);
+  qToBigEndian(stamp.size, version.data() + 16);
+  for (qsizetype i = 0; i < static_cast<qsizetype>(stamp.times.size()); ++i)
+    qToBigEndian(stamp.times[i], version.data() + 24 + 8 * i);
+  return QCryptographicHash::hash(version, QCryptographicHash::Sha256);
+}
+
+void hashPrefix(QFile &file, QCryptographicHash &hash, quint64 size, const std::atomic_bool &cancelled)
+{
+  if (!file.seek(0))
+    throw Error(QCoreApplication::translate("Enhanced", "Could not read the transfer prefix."));
+  while (size != 0) {
+    checkCancelled(cancelled);
+    const auto count = static_cast<qint64>(std::min<quint64>(size, ChunkSize));
+    const auto bytes = file.read(count);
+    if (bytes.size() != count)
+      throw Error(QCoreApplication::translate("Enhanced", "Could not read the transfer prefix."));
+    hash.addData(bytes);
+    size -= count;
+  }
+}
+
+constexpr qsizetype ResumeIdentitySize = 2 * TokenSize;
+constexpr qsizetype ResumeOffsetSize = sizeof(quint64) + TokenSize;
+constexpr qsizetype CheckpointHeaderSize = 4 + 2 * TokenSize + ResumeIdentitySize;
+constexpr qint64 CheckpointLifetime = 24 * 60 * 60;
+constexpr auto PrivateDirectory = QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner;
+
+QString invalidCheckpoint()
+{
+  return QCoreApplication::translate(
+      "Enhanced", "The resume checkpoint is unavailable, expired or does not match. Inspect it before clearing it."
+  );
+}
+
+QString canonicalDestination(const QString &directory)
+{
+  const QFileInfo destination(directory);
+  if (!destination.isDir() || isLink(destination))
+    throw Error(QCoreApplication::translate("Enhanced", "Select an existing local destination folder."));
+  return destination.canonicalFilePath();
+}
+
+class ResumeCheckpoint
+{
+public:
+  ResumeCheckpoint(const QString &root, const SourceStamp &rootStamp)
+      : m_root(root),
+        m_rootStamp(rootStamp),
+        m_checkpoint(m_root.filePath(QStringLiteral(".deskflow-resume-v1"))),
+        m_content(m_checkpoint.filePath(QStringLiteral("files"))),
+        m_metadataPath(m_checkpoint.filePath(QStringLiteral("metadata"))),
+        m_lock(m_checkpoint.path() + QStringLiteral(".lock"))
+  {
+    m_lock.setStaleLockTime(0);
+    if (!m_lock.tryLock(0))
+      throw Error(
+          QCoreApplication::translate("Enhanced", "Another process is using this destination's resume checkpoint.")
+      );
+  }
+
+  void
+  prepare(const TransferOptions &options, QByteArrayView identity, const QByteArray &manifest, const FileEntry &entry)
+  {
+    QByteArray expected("DFR1");
+    expected += options.identity.fingerprint;
+    expected += options.peerFingerprint;
+    expected.append(identity.data(), identity.size());
+    expected += manifest;
+
+    checkRoot();
+    const QFileInfo path(m_checkpoint.path());
+    if (!path.exists() && !path.isSymLink()) {
+      StagingDirectory fresh(m_root.path(), m_rootStamp);
+      const QDir freshDir(fresh.path());
+      QSaveFile metadata(freshDir.filePath(QStringLiteral("metadata")));
+      if (!freshDir.mkdir(QStringLiteral("files"), PrivateDirectory) || !metadata.open(QIODevice::WriteOnly) ||
+          metadata.write(expected) != expected.size() || !metadata.commit() || !fresh.publish(m_checkpoint.path())) {
+        throw Error(QCoreApplication::translate("Enhanced", "Could not create the resume checkpoint."));
+      }
+    }
+
+    m_checkpointStamp = stampPath(m_checkpoint.path(), true);
+    m_contentStamp = stampPath(m_content.path(), true);
+    checkPaths();
+    if (readMetadata() != expected)
+      throw Error(invalidCheckpoint());
+    const auto age = QFileInfo(m_metadataPath).lastModified().secsTo(QDateTime::currentDateTimeUtc());
+    if (age < 0 || age > CheckpointLifetime)
+      throw Error(invalidCheckpoint());
+    m_name = entry.path;
+    checkContents();
+    const auto distinctPath = m_content.filePath(m_name);
+    if (!QFileInfo::exists(distinctPath)) {
+      QFile fresh(distinctPath);
+      if (!fresh.open(QIODevice::WriteOnly | QIODevice::NewOnly))
+        throw Error(invalidCheckpoint());
+    }
+    const auto stamp = stampPath(distinctPath, false);
+    openTransferFile(file, distinctPath, Access::Update);
+    if (!stamp || stampDescriptor(file.handle()) != stamp || stamp->size > entry.size)
+      throw Error(invalidCheckpoint());
+    m_fileStamp = *stamp;
+  }
+
+  quint64 retainedSize(quint64 declared) const
+  {
+    return m_fileStamp.size == declared ? declared : m_fileStamp.size - m_fileStamp.size % ChunkSize;
+  }
+
+  void publish(const QString &path)
+  {
+    checkPaths();
+    checkContents();
+    const auto stored = stampPath(m_content.filePath(m_name), false);
+    if (!stored || stored->device != m_fileStamp.device || stored->file != m_fileStamp.file ||
+        !publishDirectory(m_content.path(), path)) {
+      throw Error(
+          QCoreApplication::translate("Enhanced", "Could not publish the verified files in the selected destination.")
+      );
+    }
+    // Publication is already committed. Leave an inert checkpoint if metadata removal fails.
+    if (QFile::remove(m_metadataPath))
+      m_root.rmdir(m_checkpoint.path());
+  }
+
+  void discard()
+  {
+    checkRoot();
+    const QFileInfo path(m_checkpoint.path());
+    if (!path.exists() && !path.isSymLink())
+      return;
+    m_checkpointStamp = stampPath(m_checkpoint.path(), true);
+    if (!m_checkpointStamp)
+      throw Error(invalidCheckpoint());
+    const auto metadata = readMetadata();
+    if (metadata.size() <= CheckpointHeaderSize || !metadata.startsWith("DFR1"))
+      throw Error(invalidCheckpoint());
+    const auto manifest = FileManifest::decode(QByteArrayView(metadata).sliced(CheckpointHeaderSize));
+    if (!isSingleFile(manifest))
+      throw Error(invalidCheckpoint());
+    m_name = manifest.entries.front().path;
+    m_contentStamp = stampPath(m_content.path(), true);
+    checkContents();
+    if (m_contentStamp) {
+      checkPaths();
+      const auto payload = m_content.filePath(m_name);
+      if ((QFileInfo::exists(payload) && (!stampPath(payload, false) || !QFile::remove(payload))) ||
+          !m_checkpoint.rmdir(QStringLiteral("files"))) {
+        throw Error(invalidCheckpoint());
+      }
+    }
+    checkRoot();
+    if (!isSameDirectory(m_checkpoint.path(), m_checkpointStamp) || !QFile::remove(m_metadataPath) ||
+        !m_root.rmdir(m_checkpoint.path())) {
+      throw Error(invalidCheckpoint());
+    }
+  }
+
+  QFile file;
+
+private:
+  void checkRoot() const
+  {
+    if (!isSameDirectory(m_root.path(), m_rootStamp))
+      throw Error(QCoreApplication::translate("Enhanced", "The destination changed during the transfer."));
+  }
+
+  void checkPaths() const
+  {
+    checkRoot();
+    if (!isSameDirectory(m_checkpoint.path(), m_checkpointStamp) || !isSameDirectory(m_content.path(), m_contentStamp))
+      throw Error(invalidCheckpoint());
+  }
+
+  QByteArray readMetadata() const
+  {
+    const auto stamp = stampPath(m_metadataPath, false);
+    if (!stamp || stamp->size > MaxPayload + CheckpointHeaderSize)
+      throw Error(invalidCheckpoint());
+    QFile metadata;
+    openTransferFile(metadata, m_metadataPath, Access::Read);
+    if (stampDescriptor(metadata.handle()) != stamp)
+      throw Error(invalidCheckpoint());
+    const auto result = metadata.read(static_cast<qint64>(stamp->size));
+    if (result.size() != static_cast<qsizetype>(stamp->size))
+      throw Error(invalidCheckpoint());
+    return result;
+  }
+
+  void checkContents() const
+  {
+    constexpr auto visible = QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot;
+    const QStringList required = m_contentStamp ? QStringList{QStringLiteral("files"), QStringLiteral("metadata")}
+                                                : QStringList{QStringLiteral("metadata")};
+    if (m_checkpoint.entryList(visible, QDir::Name) != required)
+      throw Error(invalidCheckpoint());
+    if (m_contentStamp) {
+      const auto files = m_content.entryList(visible, QDir::Name);
+      if (!files.isEmpty() && files != QStringList{m_name})
+        throw Error(invalidCheckpoint());
+    }
+  }
+
+  const QDir m_root;
+  const SourceStamp m_rootStamp;
+  const QDir m_checkpoint;
+  const QDir m_content;
+  const QString m_metadataPath;
+  QLockFile m_lock;
+  std::optional<SourceStamp> m_checkpointStamp;
+  std::optional<SourceStamp> m_contentStamp;
+  SourceStamp m_fileStamp{};
+  QString m_name;
+};
+
 void checkOptions(const TransferOptions &options)
 {
   if (options.peerFingerprint.size() != TokenSize || options.peerFingerprint == options.identity.fingerprint ||
       options.controlPort == 0 || options.dataPort == 0 || options.controlPort == options.dataPort ||
-      options.address.isNull()) {
+      options.address.isNull() || (options.resume && options.dropHandoff)) {
     throw Error(
         QCoreApplication::translate(
             "Enhanced", "Enter a different peer's SHA-256 fingerprint, an IP address and two distinct ports."
@@ -383,12 +646,23 @@ void checkOptions(const TransferOptions &options)
   }
 }
 
-void negotiateFiles(TlsChannel &control)
+bool negotiateFiles(TlsChannel &control, const TransferOptions &options, bool sender)
 {
-  control.send(Message::Hello, fileCapability());
+  auto supported = fileCapability();
+  if (options.resume)
+    supported[0] |= ResumeCapability;
+  if (options.dropHandoff)
+    supported[0] |= DropCapability;
+  control.send(Message::Hello, supported);
   const auto peer = control.receive(Message::Hello, 1, 1);
   if ((peer.at(0) & fileCapability().at(0)) == 0)
     throw Error(QCoreApplication::translate("Enhanced", "The peer does not support enhanced file transfer."));
+  if (options.resume != ((peer.at(0) & ResumeCapability) != 0))
+    throw Error(QCoreApplication::translate("Enhanced", "Both peers must enable single-file resume."));
+  const bool dropHandoff = options.dropHandoff && (peer.at(0) & DropCapability) != 0;
+  if (sender && options.dropHandoff && !dropHandoff)
+    throw Error(QCoreApplication::translate("Enhanced", "The receiver has not enabled local file drop placement."));
+  return dropHandoff;
 }
 
 struct AcceptedChannel
@@ -430,6 +704,79 @@ AcceptedChannel acceptPinnedChannel(
   }
 }
 
+void sendContent(
+    TlsChannel &data, QFile &file, QCryptographicHash &hash, quint64 offset, quint64 size, quint64 &completed,
+    quint64 total, const std::atomic_bool &cancelled, const TransferProgress &progress
+)
+{
+  while (offset < size) {
+    checkCancelled(cancelled);
+    const auto count = static_cast<qint64>(std::min<quint64>(size - offset, ChunkSize));
+    const auto bytes = file.read(count);
+    if (bytes.size() != count)
+      throw Error(QCoreApplication::translate("Enhanced", "A selected file changed or could not be read."));
+    hash.addData(bytes);
+    data.send(Message::Chunk, bytes);
+    offset += count;
+    completed += count;
+    if (progress)
+      progress(completed, total);
+  }
+}
+
+struct ResumeSource
+{
+  QFile file;
+  QByteArray identity;
+  QCryptographicHash hash{QCryptographicHash::Sha256};
+  quint64 offset = 0;
+};
+
+void prepareResumeSource(ResumeSource &resume, const SourceEntry &source, const std::atomic_bool &cancelled)
+{
+  openTransferFile(resume.file, source.absolutePath, Access::Read);
+  QCryptographicHash fullHash(QCryptographicHash::Sha256);
+  hashPrefix(resume.file, fullHash, source.stamp.size, cancelled);
+  if (stampDescriptor(resume.file.handle()) != source.stamp)
+    throw Error(QCoreApplication::translate("Enhanced", "The source selection changed during the transfer."));
+  resume.identity = sourceVersion(source.stamp) + fullHash.result();
+}
+
+void verifyResumePrefix(TlsChannel &control, ResumeSource &resume, quint64 total, const std::atomic_bool &cancelled)
+{
+  control.send(Message::ResumeIdentity, resume.identity);
+  const auto offer = control.receive(
+      Message::ResumeOffset, ResumeOffsetSize, ResumeOffsetSize, QDeadlineTimer(ResumePreparationTimeout)
+  );
+  resume.offset = qFromBigEndian<quint64>(offer.constData());
+  if (resume.offset > total || (resume.offset != total && resume.offset % ChunkSize != 0))
+    throw Error(QCoreApplication::translate("Enhanced", "The peer offered an invalid resume offset."));
+  hashPrefix(resume.file, resume.hash, resume.offset, cancelled);
+  if (resume.hash.result() != offer.sliced(sizeof(quint64)))
+    throw Error(QCoreApplication::translate("Enhanced", "The retained transfer prefix differs from the source file."));
+  control.send(Message::ResumeVerified);
+}
+
+void sendResume(
+    TlsChannel &data, ResumeSource &resume, const Offer &offer, const std::atomic_bool &cancelled,
+    const TransferProgress &progress
+)
+{
+  quint64 completed = resume.offset;
+  if (progress)
+    progress(completed, offer.total);
+  sendContent(data, resume.file, resume.hash, resume.offset, offer.total, completed, offer.total, cancelled, progress);
+  const auto &source = offer.sources.front();
+  const auto digest = resume.hash.result();
+  if (stampDescriptor(resume.file.handle()) != source.stamp || !sourceMatches(source, offer.manifest.entries.front()) ||
+      digest != resume.identity.last(TokenSize)) {
+    throw Error(QCoreApplication::translate("Enhanced", "The source selection changed during the transfer."));
+  }
+  data.send(Message::Digest, digest);
+  data.receive(Message::FileAck, 0, 0);
+  data.send(Message::Finish);
+}
+
 void sendSelection(
     TlsChannel &data, const Offer &offer, const std::atomic_bool &cancelled, const TransferProgress &progress
 )
@@ -448,36 +795,14 @@ void sendSelection(
     }
 
     QFile file;
-    const auto descriptor = openSource(source.absolutePath);
-    if (descriptor < 0)
-      throw Error(QCoreApplication::translate("Enhanced", "A selected file could not be opened safely."));
-    if (!file.open(descriptor, QIODevice::ReadOnly, QFileDevice::AutoCloseHandle)) {
-#if defined(Q_OS_WIN)
-      _close(descriptor);
-#else
-      ::close(descriptor);
-#endif
-      throw Error(QCoreApplication::translate("Enhanced", "A selected file could not be opened safely."));
-    }
-    if (stampDescriptor(descriptor) != source.stamp)
+    openTransferFile(file, source.absolutePath, Access::Read);
+    if (stampDescriptor(file.handle()) != source.stamp)
       throw Error(QCoreApplication::translate("Enhanced", "The source selection changed during the transfer."));
 
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    for (quint64 offset = 0; offset < entry.size;) {
-      checkCancelled(cancelled);
-      const auto count = static_cast<qint64>(std::min<quint64>(entry.size - offset, ChunkSize));
-      const auto bytes = file.read(count);
-      if (bytes.size() != count)
-        throw Error(QCoreApplication::translate("Enhanced", "A selected file changed or could not be read."));
-      hash.addData(bytes);
-      data.send(Message::Chunk, bytes);
-      offset += count;
-      completed += count;
-      if (progress)
-        progress(completed, offer.total);
-    }
+    sendContent(data, file, hash, 0, entry.size, completed, offer.total, cancelled, progress);
 
-    if (stampDescriptor(descriptor) != source.stamp || !sourceMatches(source, entry))
+    if (stampDescriptor(file.handle()) != source.stamp || !sourceMatches(source, entry))
       throw Error(QCoreApplication::translate("Enhanced", "The source selection changed during the transfer."));
     data.send(Message::Digest, hash.result());
     data.receive(Message::FileAck, 0, 0);
@@ -488,6 +813,39 @@ void sendSelection(
       throw Error(QCoreApplication::translate("Enhanced", "The source selection changed during the transfer."));
   }
   data.send(Message::Finish);
+}
+
+void receiveContent(
+    TlsChannel &data, QFile &file, QCryptographicHash &hash, quint64 offset, quint64 size, quint64 &completed,
+    quint64 total, const TransferProgress &progress
+)
+{
+  while (offset < size) {
+    const auto count = static_cast<qsizetype>(std::min<quint64>(size - offset, ChunkSize));
+    const auto bytes = data.receive(Message::Chunk, count, count);
+    if (file.write(bytes) != count)
+      throw Error(
+          QCoreApplication::translate("Enhanced", "Could not write the received file. Check the available disk space.")
+      );
+    hash.addData(bytes);
+    offset += count;
+    completed += count;
+    if (progress)
+      progress(completed, total);
+  }
+}
+
+void finishReceivingFile(TlsChannel &data, QFile &file, const QCryptographicHash &hash, QByteArrayView expected = {})
+{
+  const auto digest = hash.result();
+  if (data.receive(Message::Digest, TokenSize, TokenSize) != digest || (!expected.isEmpty() && expected != digest))
+    throw Error(QCoreApplication::translate("Enhanced", "A received file failed SHA-256 verification."));
+  if (!file.flush())
+    throw Error(QCoreApplication::translate("Enhanced", "Could not finish writing a received file."));
+  file.close();
+  if (file.error() != QFileDevice::NoError)
+    throw Error(QCoreApplication::translate("Enhanced", "Could not close a received file."));
+  data.send(Message::FileAck);
 }
 
 void receiveSelection(
@@ -516,37 +874,15 @@ void receiveSelection(
       throw Error(QCoreApplication::translate("Enhanced", "Could not create a received file."));
 
     QCryptographicHash hash(QCryptographicHash::Sha256);
-    for (quint64 offset = 0; offset < entry.size;) {
-      const auto count = static_cast<qsizetype>(std::min<quint64>(entry.size - offset, ChunkSize));
-      const auto bytes = data.receive(Message::Chunk, count, count);
-      if (file.write(bytes) != count)
-        throw Error(
-            QCoreApplication::translate(
-                "Enhanced", "Could not write the received file. Check the available disk space."
-            )
-        );
-      hash.addData(bytes);
-      offset += count;
-      completed += count;
-      if (progress)
-        progress(completed, total);
-    }
-
-    if (data.receive(Message::Digest, TokenSize, TokenSize) != hash.result())
-      throw Error(QCoreApplication::translate("Enhanced", "A received file failed SHA-256 verification."));
-    if (!file.flush())
-      throw Error(QCoreApplication::translate("Enhanced", "Could not finish writing a received file."));
-    file.close();
-    if (file.error() != QFileDevice::NoError)
-      throw Error(QCoreApplication::translate("Enhanced", "Could not close a received file."));
-    data.send(Message::FileAck);
+    receiveContent(data, file, hash, 0, entry.size, completed, total, progress);
+    finishReceivingFile(data, file, hash);
   }
   data.receive(Message::Finish, 0, 0);
 }
 
 } // namespace
 
-void sendFiles(
+bool sendFiles(
     const TransferOptions &options, const QStringList &paths, const std::atomic_bool &cancelled,
     const TransferProgress &progress
 )
@@ -554,14 +890,23 @@ void sendFiles(
   checkOptions(options);
   const auto offer = buildOffer(paths, cancelled);
   const auto manifest = offer.manifest.encode();
+  std::optional<ResumeSource> resume;
+  if (options.resume) {
+    if (!isSingleFile(offer.manifest))
+      throw Error(QCoreApplication::translate("Enhanced", "Resume requires one ordinary file."));
+    resume.emplace();
+    prepareResumeSource(*resume, offer.sources.front(), cancelled);
+  }
 
   const QDeadlineTimer lifetime(TransferTimeout);
   QTcpSocket controlSocket;
   auto deadline = QDeadlineTimer(HandshakeTimeout);
   connectSocket(controlSocket, options.address, options.controlPort, deadline, cancelled);
   TlsChannel control(controlSocket, options.identity, options.peerFingerprint, cancelled, false, deadline, lifetime);
-  negotiateFiles(control);
+  const bool dropHandoff = negotiateFiles(control, options, true);
   control.send(Message::Offer, manifest);
+  if (resume)
+    verifyResumePrefix(control, *resume, offer.total, cancelled);
   const auto token = control.receive(Message::Accept, TokenSize, TokenSize);
 
   QTcpSocket dataSocket;
@@ -572,7 +917,10 @@ void sendFiles(
   );
   data.send(Message::DataOpen, token, deadline);
   data.receive(Message::DataReady, 0, 0, deadline);
-  sendSelection(data, offer, cancelled, progress);
+  if (resume)
+    sendResume(data, *resume, offer, cancelled, progress);
+  else
+    sendSelection(data, offer, cancelled, progress);
   try {
     control.send(Message::Finish);
     control.receive(Message::Committed, 0, 0);
@@ -585,6 +933,7 @@ void sendFiles(
             .arg(error.message)
     );
   }
+  return dropHandoff;
 }
 
 ReceivedFiles receiveFiles(
@@ -593,10 +942,7 @@ ReceivedFiles receiveFiles(
 )
 {
   checkOptions(options);
-  const QFileInfo destination(directory);
-  if (!destination.isDir() || isLink(destination))
-    throw Error(QCoreApplication::translate("Enhanced", "Select an existing local destination folder."));
-  const auto canonical = destination.canonicalFilePath();
+  const auto canonical = canonicalDestination(directory);
   const auto destinationStamp = canonical.isEmpty() ? std::nullopt : stampPath(canonical, true);
   if (!destinationStamp)
     throw Error(QCoreApplication::translate("Enhanced", "Could not resolve the destination folder."));
@@ -608,20 +954,51 @@ ReceivedFiles receiveFiles(
   if (listening)
     listening();
 
-  const auto controlConnection =
-      acceptPinnedChannel(controlServer, options, cancelled, QDeadlineTimer(OfferTimeout), lifetime);
+  const auto controlConnection = acceptPinnedChannel(
+      controlServer, options, cancelled, QDeadlineTimer(options.resume ? ResumePreparationTimeout : OfferTimeout),
+      lifetime
+  );
   controlServer.close();
   auto &control = *controlConnection.tls;
-  negotiateFiles(control);
-  const auto manifest = FileManifest::decode(control.receive(Message::Offer, 4, MaxPayload));
+  const bool dropHandoff = negotiateFiles(control, options, false);
+  const auto encodedManifest = control.receive(Message::Offer, 4, MaxPayload);
+  const auto manifest = FileManifest::decode(encodedManifest);
   const auto total = manifest.validate();
 
-  const QStorageInfo storage(canonical);
-  if (storage.isReady() && storage.bytesAvailable() >= 0 && static_cast<quint64>(storage.bytesAvailable()) < total)
-    throw Error(QCoreApplication::translate("Enhanced", "There is not enough free space to receive this selection."));
   if (!isSameDirectory(canonical, destinationStamp))
     throw Error(QCoreApplication::translate("Enhanced", "The destination changed during the transfer."));
-  StagingDirectory staging(canonical, *destinationStamp);
+  std::optional<StagingDirectory> staging;
+  std::optional<ResumeCheckpoint> checkpoint;
+  QCryptographicHash resumeHash(QCryptographicHash::Sha256);
+  QByteArray resumeIdentity;
+  quint64 offset = 0;
+  if (options.resume) {
+    if (!isSingleFile(manifest))
+      throw Error(QCoreApplication::translate("Enhanced", "Resume requires one ordinary file."));
+    resumeIdentity = control.receive(Message::ResumeIdentity, ResumeIdentitySize, ResumeIdentitySize);
+    checkpoint.emplace(canonical, *destinationStamp);
+    checkpoint->prepare(options, resumeIdentity, encodedManifest, manifest.entries.front());
+    offset = checkpoint->retainedSize(total);
+  }
+
+  const QStorageInfo storage(canonical);
+  if (storage.isReady() && storage.bytesAvailable() >= 0 &&
+      static_cast<quint64>(storage.bytesAvailable()) < total - offset) {
+    throw Error(QCoreApplication::translate("Enhanced", "There is not enough free space to receive this selection."));
+  }
+  if (checkpoint) {
+    auto &file = checkpoint->file;
+    if (static_cast<quint64>(file.size()) != offset && !file.resize(static_cast<qint64>(offset)))
+      throw Error(invalidCheckpoint());
+    hashPrefix(file, resumeHash, offset, cancelled);
+    QByteArray prefix(sizeof(quint64), Qt::Uninitialized);
+    qToBigEndian(offset, prefix.data());
+    prefix += resumeHash.result();
+    control.send(Message::ResumeOffset, prefix);
+    control.receive(Message::ResumeVerified, 0, 0, QDeadlineTimer(ResumePreparationTimeout));
+  } else {
+    staging.emplace(canonical, *destinationStamp);
+  }
   QByteArray token(TokenSize, Qt::Uninitialized);
   if (RAND_bytes(reinterpret_cast<unsigned char *>(token.data()), static_cast<int>(token.size())) != 1)
     throw Error(QCoreApplication::translate("Enhanced", "Could not authorize the enhanced data connection."));
@@ -634,16 +1011,28 @@ ReceivedFiles receiveFiles(
   dataServer.close();
   auto &data = *dataConnection.tls;
   data.send(Message::DataReady);
-  receiveSelection(data, manifest, staging, total, cancelled, progress);
+  if (checkpoint) {
+    quint64 completed = offset;
+    if (progress)
+      progress(completed, total);
+    receiveContent(data, checkpoint->file, resumeHash, offset, total, completed, total, progress);
+    finishReceivingFile(data, checkpoint->file, resumeHash, QByteArrayView(resumeIdentity).last(TokenSize));
+    data.receive(Message::Finish, 0, 0);
+  } else {
+    receiveSelection(data, manifest, *staging, total, cancelled, progress);
+  }
   control.receive(Message::Finish, 0, 0);
 
   checkCancelled(cancelled);
   const auto published =
       QDir(canonical).filePath(QStringLiteral("Deskflow-%1").arg(QUuid::createUuid().toString(QUuid::WithoutBraces)));
-  if (!staging.publish(published))
+  if (checkpoint) {
+    checkpoint->publish(published);
+  } else if (!staging->publish(published)) {
     throw Error(
         QCoreApplication::translate("Enhanced", "Could not publish the verified files in the selected destination.")
     );
+  }
 
   // The local commit stands even if the final acknowledgement cannot reach the sender.
   try {
@@ -657,7 +1046,17 @@ ReceivedFiles receiveFiles(
     if (!entry.path.contains(u'/'))
       selection.append(publishedDirectory.filePath(entry.path));
   }
-  return {published, selection};
+  return {published, selection, dropHandoff};
+}
+
+void discardResumeCheckpoint(const QString &directory)
+{
+  const auto canonical = canonicalDestination(directory);
+  const auto stamp = stampPath(canonical, true);
+  if (!stamp)
+    throw Error(QCoreApplication::translate("Enhanced", "Could not resolve the destination folder."));
+  ResumeCheckpoint checkpoint(canonical, *stamp);
+  checkpoint.discard();
 }
 
 } // namespace deskflow::enhanced
