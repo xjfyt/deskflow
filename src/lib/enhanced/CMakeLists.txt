@@ -6,6 +6,8 @@ add_library(enhanced STATIC
   FileManifest.h
   FileTransfer.cpp
   FileTransfer.h
+  InputHub.cpp
+  InputHub.h
   InputLease.cpp
   InputLease.h
   InputRouter.cpp

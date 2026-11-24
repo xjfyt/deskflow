@@ -10,6 +10,7 @@
 
 #ifdef DESKFLOW_ENHANCED
 #include "EnhancedFileCommand.h"
+#include "enhanced/InputHub.h"
 #endif
 #if defined(Q_OS_WIN) || defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
 #include "enhanced/InputSession.h"
@@ -90,6 +91,8 @@ int main(int argc, char **argv)
 #ifdef DESKFLOW_ENHANCED
   if (argc > 1 && std::strcmp(argv[1], "--enhanced-files") == 0)
     return deskflow::enhanced::fileCommand(argc, argv);
+  if (argc > 1 && std::strcmp(argv[1], "--enhanced-hub") == 0)
+    return deskflow::enhanced::inputHubCommand(argc, argv);
 #ifdef Q_OS_WIN
   if (argc > 1 && std::strcmp(argv[1], "--enhanced-control") == 0)
     return deskflow::enhanced::windowsInputCommand(argc, argv);

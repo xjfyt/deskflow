@@ -43,7 +43,10 @@ InputSessionOptions parseInputOptions(const QStringList &arguments, const QStrin
   const QCommandLineOption guiSession(
       QStringLiteral("gui-session"), QStringLiteral("Run with a GUI-owned stdin control pipe.")
   );
-  parser.addOptions({certificate, peer, address, edge, port});
+  const QCommandLineOption viaHub(
+      QStringLiteral("via-hub"), QStringLiteral("Allow a verified hub to relay input to its other paired endpoint.")
+  );
+  parser.addOptions({certificate, peer, address, edge, port, viaHub});
   if (allowGui)
     parser.addOption(guiSession);
   auto sessionArguments = arguments;
@@ -66,6 +69,8 @@ InputSessionOptions parseInputOptions(const QStringList &arguments, const QStrin
   const auto identity = loadIdentity(parser.value(certificate));
   if (identity.fingerprint == pin)
     throw Error(QStringLiteral("Enter the fingerprint of the other computer."));
+  if (parser.isSet(viaHub) && mode == QStringLiteral("listen"))
+    throw Error(QStringLiteral("--via-hub requires connect mode."));
   return {
       identity,
       pin,
@@ -73,7 +78,8 @@ InputSessionOptions parseInputOptions(const QStringList &arguments, const QStrin
       bindPort,
       mode == QStringLiteral("listen"),
       localEdge == QStringLiteral("right"),
-      allowGui && parser.isSet(guiSession)
+      allowGui && parser.isSet(guiSession),
+      parser.isSet(viaHub)
   };
 }
 
@@ -176,8 +182,12 @@ void runInputNetwork(InputExchange &exchange, const InputSessionOptions &options
     }
 
     auto &channel = *authenticated;
-    channel.send(Message::Hello, capability, QDeadlineTimer(5000));
-    if (channel.receive(Message::Hello, capability.size(), capability.size(), QDeadlineTimer(5000)) != capability)
+    QByteArray hello(capability.data(), capability.size());
+    if (options.viaHub)
+      hello += InputRelayCapability;
+    channel.send(Message::Hello, hello, QDeadlineTimer(5000));
+    const QDeadlineTimer helloDeadline(options.viaHub ? 120000 : 5000);
+    if (channel.receive(Message::Hello, hello.size(), hello.size(), helloDeadline) != hello)
       throw Error(QStringLiteral("The verified peer does not support the same enhanced input backend."));
 
     InputState lease;

@@ -82,6 +82,23 @@ Wayland 会话、远程 X display 和无法核实的本地会话会拒绝启动�
 
 启动后通过本机输入抢回，使用 Ctrl+C 或 Control+Option+Shift+F12 结束会话。系统接管事件监听、进入 Secure Input、切换桌面或屏幕布局变化时，会结束当前会话。媒体键、Globe 和 Caps Lock 暂不转发。权限变更、锁屏及断线时的事件释放须在实机上复验。
 
+## 三机输入中继预览
+
+让第三台电脑 H 作为协调节点，A 与 B 作为输入端点。H 可以运行任意已构建的系统版本，A 和 B 需要同一输入协议族与一致的版本。三台电脑分别生成身份。H 验证 A 和 B 的指纹，A 和 B 分别核对 H 的指纹并用 `--via-hub` 明确允许 H 转发。端点先停止经典 core。
+
+以下示例使用 Windows 两端和 H 的 IP `192.168.1.10`。先运行 H，再启动 A 和 B。
+
+```powershell
+# H
+.\deskflow-core.exe --enhanced-hub --certificate 'C:/DeskflowDev/hub.pem' --address 192.168.1.10 --family windows --peer-a '替换为 A 指纹' --peer-b '替换为 B 指纹'
+# A
+.\deskflow-core.exe --enhanced-control connect --via-hub --certificate 'C:/DeskflowDev/a.pem' --peer '替换为 H 指纹' --address 192.168.1.10 --port 24803 --edge right
+# B
+.\deskflow-core.exe --enhanced-control connect --via-hub --certificate 'C:/DeskflowDev/b.pem' --peer '替换为 H 指纹' --address 192.168.1.10 --port 24804 --edge left
+```
+
+等待 H 确认两个端点后，A 和 B 可以互相越过配置的边缘。任一端断开都会结束转发，端点按看门狗和本机状态释放注入的按键。H 只承担中继与仲裁。三个桌面均可参与的动态布局是后续阶段。
+
 ## 当前能力和验收范围
 
 | 功能 | 代码状态 | 验收 |
@@ -91,7 +108,8 @@ Wayland 会话、远程 X display 和无法核实的本地会话会拒绝启动�
 | 双向输入 | Windows 双机图形入口、Linux X11 与 macOS 同系统双机命令行入口，各有左右边缘和双端发起 | 真实设备、热键、物理输入过滤、各 DPI 布局与延迟待验收 |
 | 文件拖放 | 双端授权的暂存式交接，收件后由本机原生拖放落到目标文件夹 | 各桌面交互、落点与取消待验收。第三方应用实时跨屏接管待开发 |
 | 断点续传 | 命令行双端启用后续传一个普通文件，验证前缀和全文件哈希 | 跨设备中断、过期清理和设备重启复验待执行 |
-| 后续 | 三机网络路由、跨系统按键映射、Wayland 输入、目录和多文件续传、统一配对管理 | 待开发 |
+| 三机中继 | 协调节点固定绑定两个获准端点，选择同一协议族双向中继 | 三台物理设备和延迟待验收，协调节点本机作为输入端点及动态拓扑待开发 |
+| 后续 | 跨系统按键映射、Wayland 输入、目录和多文件续传、统一配对管理 | 待开发 |
 
 Wayland 剪贴板能力取决于当前会话和合成器。文件窗口可以通过文件选择和接收目录操作。Windows 输入原型面向普通交互桌面。当前布局使用虚拟桌面的最左或最右边缘，未提供跨多个物理屏幕的任意拓扑。
 
@@ -99,5 +117,6 @@ Wayland 剪贴板能力取决于当前会话和合成器。文件窗口可以通
 
 - Windows 编译环境和经典构建命令见 [P0 基线](../P0_BASELINE.md)。构建增强版时使用独立的 `build/enhanced` 并打开 `BUILD_ENHANCED`。
 - 单测覆盖帧版本和序号、清单边界与路径校验、目标就绪、租约竞争和清理。回环用例覆盖双端指纹、分块传输、未认证连接、取消和文件被替换。把 Qt 和 OpenSSL 的 DLL 目录加到 Windows 的 `PATH`，然后执行 `ctest --test-dir build/enhanced/src/unittests -R Enhanced --output-on-failure`。
+- 使用 `python docs/validation/test_input_hub.py build/enhanced/bin/deskflow-core.exe` 可在 Windows 验证中继协议。脚本只使用临时证书和本机模拟端点。
 - [按原计划复核及验收矩阵](ENHANCED_AUDIT.md) 列出行为级验收步骤、预期和构建边界。
 - [后续开发计划](ENHANCED_ROADMAP.md) 记录三机路由、跨系统输入、原生拖放和续传的验收门槛。

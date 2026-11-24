@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y -qq ca-certificates git dpkg-dev file
+          apt-get install -y -qq ca-certificates git dpkg-dev file python3
 
       - uses: actions/checkout@v6
         with:
@@ -197,6 +197,11 @@ jobs:
           fi
           ctest --test-dir build/src/unittests --timeout 90 --output-on-failure \
             -R '^(Enhanced.*|SecureUtilsTests)$'
+          case "$RUNNER_OS" in
+            Windows) python docs/validation/test_input_hub.py build/bin/deskflow-core.exe ;;
+            macOS) python3 docs/validation/test_input_hub.py build/bin/Deskflow.app/Contents/MacOS/deskflow-core ;;
+            Linux) python3 docs/validation/test_input_hub.py build/bin/deskflow-core ;;
+          esac
 
       - name: Upload packages and checksums
         uses: actions/upload-artifact@v4

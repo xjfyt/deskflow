@@ -30,7 +30,8 @@ install(
 if(BUILD_ENHANCED)
   install(FILES Enhanced.md ENHANCED_AUDIT.md ENHANCED_ROADMAP.md RELEASES.md UPSTREAM_SYNC.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
-  install(FILES validation/Get-DeskflowFileManifest.ps1 DESTINATION ${CMAKE_INSTALL_DOCDIR}/validation)
+  install(FILES validation/Get-DeskflowFileManifest.ps1 validation/test_input_hub.py
+    DESTINATION ${CMAKE_INSTALL_DOCDIR}/validation)
 endif()
 
 # Make sure that help docs are moved.

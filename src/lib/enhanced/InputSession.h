@@ -17,6 +17,7 @@ namespace deskflow::enhanced {
 
 inline constexpr auto EnhancedInputLockName = "deskflow-enhanced-input";
 inline constexpr int InputWatchdog = 600;
+inline constexpr char InputRelayCapability = '\x01';
 
 struct InputSessionOptions
 {
@@ -27,6 +28,7 @@ struct InputSessionOptions
   bool listener;
   bool rightEdge;
   bool guiSession;
+  bool viaHub;
 };
 
 InputSessionOptions parseInputOptions(const QStringList &arguments, const QString &description, bool allowGui);

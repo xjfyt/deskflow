@@ -17,7 +17,7 @@
 | macOS | Intel、Apple Silicon | DMG |
 | Debian 13 | amd64、arm64 | DEB |
 
-打包会检查 ZIP 的主程序、DMG 的镜像校验和，以及 DEB 的架构和安装位置。发布任务复核八个包和 SHA-256 后再创建 Release。Windows 包使用现有 CPack/WiX 安装规则。macOS CI 包采用临时本地签名，Developer ID 发行签名和 Apple 公证需要发行者的凭据。实机测试和签名状态应单独记录。
+打包会检查 ZIP 的主程序、DMG 的镜像校验和，以及 DEB 的架构和安装位置。各架构还运行证书、文件传输、输入协议和合成中继用例。发布任务复核八个包和 SHA-256 后再创建 Release。Windows 包使用现有 CPack/WiX 安装规则。macOS CI 包采用临时本地签名，Developer ID 发行签名和 Apple 公证需要发行者的凭据。实机测试和签名状态应单独记录。
 
 ## 打测试标签
 
