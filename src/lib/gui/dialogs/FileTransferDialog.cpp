@@ -5,10 +5,13 @@
 
 #include "FileTransferDialog.h"
 
+#include "enhanced/FileManifest.h"
+
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDesktopServices>
 #include <QDir>
+#include <QDrag>
 #include <QDragEnterEvent>
 #include <QElapsedTimer>
 #include <QFileDialog>
@@ -27,23 +30,149 @@
 #include <QTimer>
 #include <QUrl>
 
+#include <functional>
+#include <utility>
+
 namespace deskflow::gui {
 namespace {
 
-constexpr auto ReceivedMime = "application/x-deskflow-received-files";
+constexpr QLatin1StringView ReceivedMime("application/x-deskflow-received-files");
+constexpr QLatin1StringView GnomeCopiedFiles("x-special/gnome-copied-files");
+constexpr QLatin1StringView KdeCutSelection("application/x-kde-cutselection");
+#ifdef Q_OS_WIN
+constexpr QLatin1StringView PreferredDropEffect("application/x-qt-windows-mime;value=\"Preferred DropEffect\"");
+#endif
 
-QStringList filePaths(const QMimeData *data)
+QStringList filePaths(const QList<QUrl> &urls)
 {
+  if (urls.size() > enhanced::MaxEntries)
+    return {};
   QStringList paths;
-  if (!data)
-    return paths;
-  for (const auto &url : data->urls()) {
-    if (!url.isLocalFile() || url.toLocalFile().isEmpty())
+  paths.reserve(urls.size());
+  for (auto url : urls) {
+    if (url.isRelative() && url.hasFragment() && url.path().isEmpty() && !url.hasQuery())
+      continue; // text/uri-list can include comment lines starting with '#'.
+    if (!url.isValid() || !url.isLocalFile() || url.hasQuery() || url.hasFragment() || !url.userInfo().isEmpty() ||
+        url.port() != -1) {
       return {};
-    paths.append(url.toLocalFile());
+    }
+    if (!url.host().isEmpty()) {
+      if (url.host() != QStringLiteral("localhost"))
+        return {};
+      url.setHost({});
+    }
+    const auto path = QDir::fromNativeSeparators(url.toLocalFile());
+    if (!QDir::isAbsolutePath(path) || path.contains(QChar::Null) || path.startsWith(QStringLiteral("//")))
+      return {};
+    paths.append(path);
   }
   return paths;
 }
+
+struct ClipboardSelection
+{
+  QStringList paths;
+  bool cut = false;
+};
+
+ClipboardSelection gnomeSelection(QByteArrayView payload)
+{
+  if (payload.size() > enhanced::MaxEntries * enhanced::MaxPathBytes)
+    return {};
+  const auto headerEnd = payload.indexOf('\n');
+  if (headerEnd < 0)
+    return {};
+  const auto operation = payload.first(headerEnd).trimmed();
+  if (operation != "copy" && operation != "cut")
+    return {};
+
+  QList<QUrl> urls;
+  payload = payload.sliced(headerEnd + 1);
+  while (!payload.isEmpty()) {
+    const auto end = payload.indexOf('\n');
+    auto line = end == -1 ? payload : payload.first(end);
+    if (line.endsWith('\r'))
+      line.chop(1);
+    if (line.isEmpty() || line.startsWith('#') || line.contains('\0') || urls.size() >= enhanced::MaxEntries)
+      return {};
+    urls.append(QUrl::fromEncoded(line, QUrl::StrictMode));
+    if (end == -1)
+      break;
+    payload = payload.sliced(end + 1);
+  }
+  return {filePaths(urls), operation == "cut"};
+}
+
+ClipboardSelection clipboardSelection(const QMimeData *data)
+{
+  if (!data)
+    return {};
+  if (data->hasFormat(GnomeCopiedFiles)) {
+    const auto selection = gnomeSelection(data->data(GnomeCopiedFiles));
+    if (!selection.paths.isEmpty())
+      return selection;
+  }
+
+  auto paths = filePaths(data->urls());
+  if (paths.isEmpty())
+    return {};
+  bool cut = data->data(KdeCutSelection).startsWith('1');
+#ifdef Q_OS_WIN
+  const auto dropEffect = data->data(PreferredDropEffect);
+  if (dropEffect.size() == 4)
+    cut = cut || (dropEffect.at(0) & 2) != 0; // DROPEFFECT_MOVE in the little-endian DWORD.
+#endif
+  return {std::move(paths), cut};
+}
+
+class LocalFileMimeData final : public QMimeData
+{
+protected:
+  QVariant retrieveData(const QString &mime, QMetaType type) const override
+  {
+    // Qt otherwise synthesizes plain text from the URLs, exposing local receiving paths to text-only consumers.
+    if (mime == QStringLiteral("text/plain"))
+      return QStringLiteral("");
+    return QMimeData::retrieveData(mime, type);
+  }
+};
+
+bool isReceivedDirectory(const QFileInfo &directory)
+{
+  return directory.isDir() && !directory.isSymLink() && !directory.isJunction() &&
+         directory.canonicalFilePath() == directory.absoluteFilePath();
+}
+
+class ReceivedFilesList final : public QListWidget
+{
+public:
+  explicit ReceivedFilesList(std::function<std::unique_ptr<QMimeData>(const QStringList &)> createPayload)
+      : m_createPayload(std::move(createPayload))
+  {
+    setSelectionMode(QAbstractItemView::ExtendedSelection);
+    setDragDropMode(QAbstractItemView::DragOnly);
+    setDragEnabled(true);
+  }
+
+protected:
+  void startDrag(Qt::DropActions) override
+  {
+    QStringList paths;
+    for (const auto *item : selectedItems())
+      paths.append(item->data(Qt::UserRole).toString());
+    if (paths.isEmpty())
+      return;
+    auto payload = m_createPayload(paths);
+    if (!payload)
+      return;
+    auto *drag = new QDrag(this);
+    drag->setMimeData(payload.release());
+    drag->exec(Qt::CopyAction, Qt::CopyAction);
+  }
+
+private:
+  std::function<std::unique_ptr<QMimeData>(const QStringList &)> m_createPayload;
+};
 
 } // namespace
 
@@ -58,8 +187,10 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   auto *fingerprint = new QLineEdit;
   fingerprint->setReadOnly(true);
   m_address = new QLineEdit;
+  m_address->setAcceptDrops(false);
   m_address->setPlaceholderText(tr("Sender: receiver IP. Receiver: your local IP."));
   m_peer = new QLineEdit;
+  m_peer->setAcceptDrops(false);
   m_peer->setMaxLength(128);
   auto *ports = new QHBoxLayout;
   m_controlPort = new QSpinBox;
@@ -81,11 +212,13 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   layout->addWidget(new QLabel(tr("Files and folders to send")));
   m_selection = new QListWidget;
   m_selection->setSelectionMode(QAbstractItemView::ExtendedSelection);
-  m_selection->setDragDropMode(QAbstractItemView::NoDragDrop);
-  m_selection->setAcceptDrops(false);
+  m_selection->setDragDropMode(QAbstractItemView::DropOnly);
+  m_selection->viewport()->installEventFilter(this);
   layout->addWidget(m_selection);
 
-  auto *selectionActions = new QHBoxLayout;
+  m_selectionActions = new QWidget;
+  auto *selectionActions = new QHBoxLayout(m_selectionActions);
+  selectionActions->setContentsMargins(0, 0, 0, 0);
   auto *addFiles = new QPushButton(tr("Add files…"));
   auto *addFolder = new QPushButton(tr("Add folder…"));
   auto *addClipboard = new QPushButton(tr("Add copied files"));
@@ -94,10 +227,10 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   selectionActions->addWidget(addFolder);
   selectionActions->addWidget(addClipboard);
   selectionActions->addWidget(remove);
-  layout->addLayout(selectionActions);
+  layout->addWidget(m_selectionActions);
 
   auto *actions = new QHBoxLayout;
-  m_send = new QPushButton(tr("Send selection"));
+  m_send = new QPushButton(tr("Send listed files"));
   m_arm = new QPushButton(tr("Send next file copy"));
   m_receive = new QPushButton(tr("Receive…"));
   m_cancel = new QPushButton(tr("Cancel"));
@@ -117,12 +250,27 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   m_status->setTextFormat(Qt::PlainText);
   layout->addWidget(m_status);
 
+  m_receivedPanel = new QWidget;
+  auto *receivedLayout = new QVBoxLayout(m_receivedPanel);
+  receivedLayout->setContentsMargins(0, 0, 0, 0);
+  const auto receivedName = tr("Received files");
+  auto *receivedLabel = new QLabel(receivedName);
+  receivedLayout->addWidget(receivedLabel);
+  auto *dragHint = new QLabel(tr("Drag received files to a folder in this computer's file manager."));
+  dragHint->setWordWrap(true);
+  receivedLayout->addWidget(dragHint);
+  m_receivedItems = new ReceivedFilesList([this](const QStringList &paths) { return receivedMime(paths); });
+  m_receivedItems->setAccessibleName(receivedName);
+  m_receivedItems->setMaximumHeight(128);
+  receivedLayout->addWidget(m_receivedItems);
   auto *resultActions = new QHBoxLayout;
   m_copy = new QPushButton(tr("Copy received files"));
   m_openFolder = new QPushButton(tr("Open received folder"));
   resultActions->addWidget(m_copy);
   resultActions->addWidget(m_openFolder);
-  layout->addLayout(resultActions);
+  receivedLayout->addLayout(resultActions);
+  layout->addWidget(m_receivedPanel);
+  m_receivedPanel->hide();
 
   connect(addFiles, &QPushButton::clicked, this, [this] {
     addPaths(QFileDialog::getOpenFileNames(this, tr("Select files to send")));
@@ -133,11 +281,14 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
       addPaths({path});
   });
   connect(addClipboard, &QPushButton::clicked, this, [this] {
-    const auto paths = filePaths(QGuiApplication::clipboard()->mimeData());
-    if (paths.isEmpty())
+    const auto selection = clipboardSelection(QGuiApplication::clipboard()->mimeData());
+    if (selection.paths.isEmpty()) {
       m_status->setText(tr("The clipboard has no local file selection."));
-    else
-      addPaths(paths);
+    } else {
+      addPaths(selection.paths);
+      if (selection.cut)
+        m_status->setText(tr("Cut files were added as copies."));
+    }
   });
   connect(remove, &QPushButton::clicked, this, [this] {
     qDeleteAll(m_selection->selectedItems());
@@ -149,7 +300,10 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   connect(m_cancel, &QPushButton::clicked, this, &FileTransferDialog::reject);
   connect(m_copy, &QPushButton::clicked, this, &FileTransferDialog::copyReceived);
   connect(m_openFolder, &QPushButton::clicked, this, [this] {
-    QDesktopServices::openUrl(QUrl::fromLocalFile(m_received.directory));
+    if (!isReceivedDirectory(QFileInfo(m_received.directory)) ||
+        !QDesktopServices::openUrl(QUrl::fromLocalFile(m_received.directory))) {
+      m_status->setText(tr("Could not open the received folder."));
+    }
   });
   connect(QGuiApplication::clipboard(), &QClipboard::dataChanged, this, &FileTransferDialog::clipboardChanged);
   m_armTimer = new QTimer(this);
@@ -182,8 +336,15 @@ FileTransferDialog::~FileTransferDialog()
 
 void FileTransferDialog::dragEnterEvent(QDragEnterEvent *event)
 {
-  if (!m_worker && !m_armed && event->possibleActions().testFlag(Qt::CopyAction) &&
-      !filePaths(event->mimeData()).isEmpty()) {
+  if (acceptsFileDrop(event)) {
+    event->setDropAction(Qt::CopyAction);
+    event->accept();
+  }
+}
+
+void FileTransferDialog::dragMoveEvent(QDragMoveEvent *event)
+{
+  if (acceptsFileDrop(event)) {
     event->setDropAction(Qt::CopyAction);
     event->accept();
   }
@@ -191,14 +352,40 @@ void FileTransferDialog::dragEnterEvent(QDragEnterEvent *event)
 
 void FileTransferDialog::dropEvent(QDropEvent *event)
 {
-  if (m_worker || m_armed || !event->possibleActions().testFlag(Qt::CopyAction))
+  if (!acceptsFileDrop(event))
     return;
-  const auto paths = filePaths(event->mimeData());
+  const auto paths = filePaths(event->mimeData()->urls());
   if (!paths.isEmpty()) {
     addPaths(paths);
     event->setDropAction(Qt::CopyAction);
     event->accept();
   }
+}
+
+bool FileTransferDialog::acceptsFileDrop(const QDropEvent *event) const
+{
+  return !m_worker && !m_armed && event->source() != m_receivedItems &&
+         event->possibleActions().testFlag(Qt::CopyAction) && event->mimeData()->hasUrls();
+}
+
+bool FileTransferDialog::eventFilter(QObject *watched, QEvent *event)
+{
+  if (m_selection && watched == m_selection->viewport()) {
+    switch (event->type()) {
+    case QEvent::DragEnter:
+      dragEnterEvent(static_cast<QDragEnterEvent *>(event));
+      return true;
+    case QEvent::DragMove:
+      dragMoveEvent(static_cast<QDragMoveEvent *>(event));
+      return true;
+    case QEvent::Drop:
+      dropEvent(static_cast<QDropEvent *>(event));
+      return true;
+    default:
+      break;
+    }
+  }
+  return QDialog::eventFilter(watched, event);
 }
 
 void FileTransferDialog::reject()
@@ -265,15 +452,15 @@ void FileTransferDialog::clipboardChanged()
   if (!m_armed)
     return;
   const auto *data = QGuiApplication::clipboard()->mimeData();
-  if (!data || data->hasFormat(QString::fromLatin1(ReceivedMime)))
+  if (!data || data->hasFormat(ReceivedMime))
     return;
-  const auto paths = filePaths(data);
-  if (paths.isEmpty())
+  const auto selection = clipboardSelection(data);
+  if (selection.paths.isEmpty())
     return;
 
   m_armTimer->stop();
   m_armed = false;
-  start(paths, {});
+  start(selection.paths, {}, selection.cut);
 }
 
 enhanced::TransferOptions FileTransferDialog::options() const
@@ -285,7 +472,7 @@ enhanced::TransferOptions FileTransferDialog::options() const
   return {m_identity, pin, ip, static_cast<quint16>(m_controlPort->value()), static_cast<quint16>(m_dataPort->value())};
 }
 
-void FileTransferDialog::start(const QStringList &sources, const QString &destination)
+void FileTransferDialog::start(const QStringList &sources, const QString &destination, bool copyCutFiles)
 {
   if (m_worker)
     return;
@@ -300,11 +487,16 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
 
   const auto clipboardRevision = m_clipboardRevision;
   const bool autoPublish = m_autoPublish->isChecked();
+  const auto transferStatus =
+      copyCutFiles ? tr("Sending cut files as copies…") : tr("Transferring and verifying files…");
   m_cancelled.store(false, std::memory_order_relaxed);
   m_progress->setRange(0, 0);
-  m_status->setText(destination.isEmpty() ? tr("Preparing file selection…") : tr("Opening the receive port…"));
+  if (destination.isEmpty())
+    m_status->setText(copyCutFiles ? transferStatus : tr("Preparing file selection…"));
+  else
+    m_status->setText(tr("Opening the receive port…"));
 
-  m_worker = QThread::create([this, transfer, sources, destination, clipboardRevision, autoPublish] {
+  m_worker = QThread::create([this, transfer, sources, destination, clipboardRevision, autoPublish, transferStatus] {
     QElapsedTimer timer;
     timer.start();
     const auto progress = [&](quint64 done, quint64 total) {
@@ -314,10 +506,10 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
       const int percent = total == 0 ? 0 : static_cast<int>(100 * done / total);
       QMetaObject::invokeMethod(
           this,
-          [this, percent] {
+          [this, percent, transferStatus] {
             m_progress->setRange(0, 100);
             m_progress->setValue(percent);
-            m_status->setText(tr("Transferring and verifying files…"));
+            m_status->setText(transferStatus);
           },
           Qt::QueuedConnection
       );
@@ -337,13 +529,13 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
       }
       QMetaObject::invokeMethod(
           this,
-          [this, received, clipboardRevision, autoPublish] {
+          [this, received = std::move(received), clipboardRevision, autoPublish]() mutable {
             m_progress->setRange(0, 100);
             m_progress->setValue(100);
             if (received.directory.isEmpty()) {
               m_status->setText(tr("The receiver confirmed the transfer."));
             } else {
-              m_received = received;
+              showReceived(std::move(received));
               if (autoPublish && m_clipboardRevision == clipboardRevision)
                 copyReceived();
               else
@@ -374,32 +566,58 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
   m_worker->start();
 }
 
-void FileTransferDialog::copyReceived()
+void FileTransferDialog::showReceived(enhanced::ReceivedFiles received)
 {
-  QList<QUrl> urls;
-  QByteArray gnomeSelection("copy");
+  m_received = std::move(received);
+  m_receivedItems->clear();
   for (const auto &path : m_received.selection) {
+    auto *item = new QListWidgetItem(QFileInfo(path).fileName(), m_receivedItems);
+    item->setData(Qt::UserRole, path);
+  }
+  m_receivedPanel->show();
+}
+
+std::unique_ptr<QMimeData> FileTransferDialog::receivedMime(const QStringList &paths)
+{
+  if (paths.isEmpty())
+    return {};
+  const QFileInfo batch(m_received.directory);
+  if (!isReceivedDirectory(batch)) {
+    m_status->setText(tr("A received file or folder is no longer available."));
+    return {};
+  }
+  QList<QUrl> urls;
+  urls.reserve(paths.size());
+  for (const auto &path : paths) {
     const QFileInfo file(path);
-    if (!file.exists() || file.isSymLink()) {
+    if ((!file.isFile() && !file.isDir()) || file.isSymLink() || file.isJunction() ||
+        file.absolutePath() != batch.absoluteFilePath()) {
       m_status->setText(tr("A received file or folder is no longer available."));
-      return;
+      return {};
     }
     const auto url = QUrl::fromLocalFile(path);
     urls.append(url);
-    gnomeSelection += '\n' + url.toEncoded();
   }
-  if (urls.isEmpty())
-    return;
-  auto *data = new QMimeData;
+  auto data = std::make_unique<LocalFileMimeData>();
   data->setUrls(urls);
-  data->setData(QString::fromLatin1(ReceivedMime), "1");
 #ifdef Q_OS_WIN
-  data->setData(
-      QStringLiteral("application/x-qt-windows-mime;value=\"Preferred DropEffect\""), QByteArray("\x01\x00\x00\x00", 4)
-  );
+  data->setData(PreferredDropEffect, QByteArray("\x01\x00\x00\x00", 4));
 #endif
-  data->setData(QStringLiteral("x-special/gnome-copied-files"), gnomeSelection);
-  QGuiApplication::clipboard()->setMimeData(data);
+  return data;
+}
+
+void FileTransferDialog::copyReceived()
+{
+  auto data = receivedMime(m_received.selection);
+  if (!data)
+    return;
+  QByteArray gnomeFiles("copy");
+  for (const auto &url : data->urls())
+    gnomeFiles += '\n' + url.toEncoded();
+  data->setData(GnomeCopiedFiles, gnomeFiles);
+  data->setData(KdeCutSelection, "0");
+  data->setData(ReceivedMime, "1");
+  QGuiApplication::clipboard()->setMimeData(data.release());
   m_status->setText(tr("Files are on the clipboard. Paste in your file manager."));
 }
 
@@ -408,7 +626,9 @@ void FileTransferDialog::refreshActions()
   const bool available = !m_worker && !m_armed;
   const bool configured = available && !m_identity.fingerprint.isEmpty();
   m_settings->setEnabled(available);
+  m_selectionActions->setEnabled(available);
   m_selection->setEnabled(available);
+  m_receivedItems->setEnabled(available);
   m_send->setEnabled(configured && m_selection->count() > 0);
   m_receive->setEnabled(configured);
   m_arm->setEnabled(configured);

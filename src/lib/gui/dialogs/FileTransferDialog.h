@@ -9,10 +9,13 @@
 
 #include <QDialog>
 
+#include <memory>
+
 class QCheckBox;
 class QLabel;
 class QLineEdit;
 class QListWidget;
+class QMimeData;
 class QProgressBar;
 class QPushButton;
 class QSpinBox;
@@ -31,7 +34,9 @@ public:
 
 protected:
   void dragEnterEvent(QDragEnterEvent *event) override;
+  void dragMoveEvent(QDragMoveEvent *event) override;
   void dropEvent(QDropEvent *event) override;
+  bool eventFilter(QObject *watched, QEvent *event) override;
   void reject() override;
 
 private:
@@ -40,7 +45,10 @@ private:
   void sendSelection();
   void armClipboard();
   void clipboardChanged();
-  void start(const QStringList &sources, const QString &destination);
+  void start(const QStringList &sources, const QString &destination, bool copyCutFiles = false);
+  bool acceptsFileDrop(const QDropEvent *event) const;
+  void showReceived(enhanced::ReceivedFiles received);
+  std::unique_ptr<QMimeData> receivedMime(const QStringList &paths);
   void copyReceived();
   void refreshActions();
   enhanced::TransferOptions options() const;
@@ -52,7 +60,10 @@ private:
   QSpinBox *m_controlPort = nullptr;
   QSpinBox *m_dataPort = nullptr;
   QWidget *m_settings = nullptr;
+  QWidget *m_selectionActions = nullptr;
   QListWidget *m_selection = nullptr;
+  QWidget *m_receivedPanel = nullptr;
+  QListWidget *m_receivedItems = nullptr;
   QCheckBox *m_autoPublish = nullptr;
   QPushButton *m_send = nullptr;
   QPushButton *m_receive = nullptr;
