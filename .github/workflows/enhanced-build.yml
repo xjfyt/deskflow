@@ -198,8 +198,16 @@ jobs:
           ctest --test-dir build/src/unittests --timeout 90 --output-on-failure \
             -R '^(Enhanced.*|SecureUtilsTests)$'
           case "$RUNNER_OS" in
-            Windows) python docs/validation/test_input_hub.py build/bin/deskflow-core.exe ;;
-            macOS) python3 docs/validation/test_input_hub.py build/bin/Deskflow.app/Contents/MacOS/deskflow-core ;;
+            Windows)
+              python docs/validation/test_input_hub.py "$core"
+              ;;
+            macOS)
+              dmg=(release/*.dmg)
+              mount_at="$(mktemp -d "$RUNNER_TEMP/deskflow-dmg.XXXXXX")"
+              hdiutil attach -readonly -nobrowse -mountpoint "$mount_at" "${dmg[0]}"
+              trap 'hdiutil detach "$mount_at"' EXIT
+              python3 docs/validation/test_input_hub.py "$mount_at/Deskflow.app/Contents/MacOS/deskflow-core"
+              ;;
             Linux) python3 docs/validation/test_input_hub.py build/bin/deskflow-core ;;
           esac
 
