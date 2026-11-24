@@ -428,7 +428,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <source>The enhanced data connection was not authorized.</source>
-        <translation>增强数据连接未通过授权。</translation>
+        <translation type="vanished">增强数据连接未通过授权。</translation>
     </message>
     <message>
         <source>Could not publish the verified files in the selected destination.</source>
@@ -513,6 +513,18 @@ p, li { white-space: pre-wrap; }
     <message>
         <source>The source selection includes a root, link or missing path.</source>
         <translation>选中项包含根目录、链接或不存在的路径。</translation>
+    </message>
+    <message>
+        <source>The destination changed during the transfer.</source>
+        <translation>接收目录在传输过程中发生变化。</translation>
+    </message>
+    <message>
+        <source>Could not confirm whether the receiver saved the files. Check the destination before retrying. %1</source>
+        <translation>无法确认接收端是否已保存文件。请检查接收目录再重试。%1</translation>
+    </message>
+    <message>
+        <source>The enhanced control connection closed.</source>
+        <translation>增强控制连接已断开。</translation>
     </message>
 </context>
 <context>
@@ -929,6 +941,10 @@ Additionally, check you are able to %1 the server config file: %2</source>
     <message>
         <source>Enhanced File Transfer…</source>
         <translation>增强文件传输…</translation>
+    </message>
+    <message>
+        <source>Enhanced Input (Windows Preview)…</source>
+        <translation>增强输入（Windows 预览）…</translation>
     </message>
 </context>
 <context>
@@ -1581,6 +1597,153 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
 </context>
 <context>
+    <name>deskflow::gui::EnhancedInputDialog</name>
+    <message>
+        <source>Enhanced Input (Windows Preview)</source>
+        <translation>增强输入（Windows 预览）</translation>
+    </message>
+    <message>
+        <source>Listen</source>
+        <translation>监听</translation>
+    </message>
+    <message>
+        <source>Connect</source>
+        <translation type="unfinished">连接</translation>
+    </message>
+    <message>
+        <source>Right</source>
+        <translation>右侧</translation>
+    </message>
+    <message>
+        <source>Left</source>
+        <translation>左侧</translation>
+    </message>
+    <message>
+        <source>Remember this verified peer</source>
+        <translation>记住此已验证对端</translation>
+    </message>
+    <message>
+        <source>Your fingerprint</source>
+        <translation type="unfinished">本机指纹</translation>
+    </message>
+    <message>
+        <source>Verified peer fingerprint</source>
+        <translation type="unfinished">已核对的对端指纹</translation>
+    </message>
+    <message>
+        <source>Connection role</source>
+        <translation>连接角色</translation>
+    </message>
+    <message>
+        <source>IP address</source>
+        <translation type="unfinished">IP 地址</translation>
+    </message>
+    <message>
+        <source>Input port</source>
+        <translation>输入端口</translation>
+    </message>
+    <message>
+        <source>Edge facing peer</source>
+        <translation>连接对端的边缘</translation>
+    </message>
+    <message>
+        <source>Emergency stop  Ctrl+Alt+Shift+F12</source>
+        <translation>紧急停止  Ctrl+Alt+Shift+F12</translation>
+    </message>
+    <message>
+        <source>Start</source>
+        <translation type="unfinished">启动</translation>
+    </message>
+    <message>
+        <source>Stop</source>
+        <translation type="unfinished">停止</translation>
+    </message>
+    <message>
+        <source>Close</source>
+        <translation type="unfinished">关闭</translation>
+    </message>
+    <message>
+        <source>This computer&apos;s local IP</source>
+        <translation>本机 IP</translation>
+    </message>
+    <message>
+        <source>Listening computer&apos;s IP</source>
+        <translation>监听端的 IP</translation>
+    </message>
+    <message>
+        <source>Could not start the enhanced input process. %1</source>
+        <translation>无法启动增强输入进程。%1</translation>
+    </message>
+    <message>
+        <source>Enhanced input stopped.</source>
+        <translation>增强输入已停止。</translation>
+    </message>
+    <message>
+        <source>Enhanced input ended. %1</source>
+        <translation>增强输入已结束。%1</translation>
+    </message>
+    <message>
+        <source>Enhanced input ended unexpectedly.</source>
+        <translation>增强输入意外结束。</translation>
+    </message>
+    <message>
+        <source>Could not find the local Deskflow data folder.</source>
+        <translation>找不到本机 Deskflow 数据目录。</translation>
+    </message>
+    <message>
+        <source>Verify both fingerprints and start the listening computer first.</source>
+        <translation>请核对两端指纹，然后先启动监听端。</translation>
+    </message>
+    <message>
+        <source>Stop the classic Deskflow core before starting enhanced input.</source>
+        <translation>请先停止经典核心，再启动增强输入。</translation>
+    </message>
+    <message>
+        <source>Enter the other computer&apos;s verified fingerprint and a specific IP address.</source>
+        <translation>请输入已验证的对端指纹和具体 IP 地址。</translation>
+    </message>
+    <message>
+        <source>Starting enhanced input…</source>
+        <translation>正在启动增强输入…</translation>
+    </message>
+    <message>
+        <source>Stopping enhanced input…</source>
+        <translation>正在停止增强输入…</translation>
+    </message>
+    <message>
+        <source>Waiting for input release. Press Ctrl+Alt+Shift+F12 on either computer to end its session.</source>
+        <translation>正在等待输入释放。在任一电脑按 Ctrl+Alt+Shift+F12 可结束本机会话。</translation>
+    </message>
+    <message>
+        <source>Waiting for a verified peer.</source>
+        <translation>正在等待通过身份验证的对端。</translation>
+    </message>
+    <message>
+        <source>Paired. Input is local. Move through the selected edge to start.</source>
+        <translation>已配对，当前由本机控制。移动鼠标越过所选边缘即可开始。</translation>
+    </message>
+    <message>
+        <source>This computer is controlling the peer.</source>
+        <translation>本机正在控制对端。</translation>
+    </message>
+    <message>
+        <source>The peer is controlling this computer. Use local input to take over.</source>
+        <translation>对端正在控制本机。操作本机键鼠可接回控制。</translation>
+    </message>
+    <message>
+        <source>Paired. Could not save the verified peer.</source>
+        <translation>已配对，但无法保存已验证的对端。</translation>
+    </message>
+    <message>
+        <source>Forgot the saved peer.</source>
+        <translation>已忘记保存的对端。</translation>
+    </message>
+    <message>
+        <source>Could not forget the saved peer.</source>
+        <translation>无法清除保存的对端。</translation>
+    </message>
+</context>
+<context>
     <name>deskflow::gui::FileTransferDialog</name>
     <message>
         <source>Enhanced File Transfer</source>
@@ -1636,7 +1799,7 @@ Enabling this setting will disable the server config GUI.</source>
     </message>
     <message>
         <source>Send selection</source>
-        <translation>发送选中项</translation>
+        <translation type="vanished">发送选中项</translation>
     </message>
     <message>
         <source>Send next file copy</source>
@@ -1733,6 +1896,30 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Files are on the clipboard. Paste in your file manager.</source>
         <translation>文件已放入剪贴板。请在文件管理器粘贴。</translation>
+    </message>
+    <message>
+        <source>Send listed files</source>
+        <translation>发送列表中的文件</translation>
+    </message>
+    <message>
+        <source>Received files</source>
+        <translation>收到的文件</translation>
+    </message>
+    <message>
+        <source>Drag received files to a folder in this computer&apos;s file manager.</source>
+        <translation>可将收到的文件拖入这台电脑的文件管理器。</translation>
+    </message>
+    <message>
+        <source>Cut files were added as copies.</source>
+        <translation>剪切的文件已按复制方式添加。</translation>
+    </message>
+    <message>
+        <source>Could not open the received folder.</source>
+        <translation>无法打开接收目录。</translation>
+    </message>
+    <message>
+        <source>Sending cut files as copies…</source>
+        <translation>正在按复制方式发送剪切的文件…</translation>
     </message>
 </context>
 <context>

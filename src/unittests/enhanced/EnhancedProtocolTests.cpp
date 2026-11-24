@@ -74,18 +74,74 @@ private Q_SLOTS:
     QCOMPARE(state.epoch, 1);
     const InputPoll oldEpoch{0, 0, false, false, {{InputKind::Key, 30, 1}}};
     const InputPoll input{1, 0, false, false, {{InputKind::Key, 30, 1}}};
+    const InputPoll ready{1, 0, false, false, {}, true};
+    advanceLease(state, {}, input);
+    QVERIFY(state.events.isEmpty());
+    QVERIFY(!state.active);
+    advanceLease(state, {}, ready);
+    QVERIFY(!state.active);
+    advanceLease(state, InputPoll::decode(ready.encode()), input);
+    QVERIFY(state.active);
+    QVERIFY(state.events.isEmpty());
     advanceLease(state, input, oldEpoch);
     QVERIFY(state.events.isEmpty());
     advanceLease(state, {}, InputPoll::decode(input.encode()));
     QCOMPARE(state.events.size(), 1);
     advanceLease(state, {1, 0, false, true, {}}, input);
     QCOMPARE(state.owner, InputSide::None);
+    QVERIFY(!state.active);
     QVERIFY(state.events.isEmpty());
     advanceLease(state, request, {});
     QCOMPARE(state.owner, InputSide::None);
     advanceLease(state, {1, 0, true, false, {}}, {});
     QCOMPARE(state.owner, InputSide::Listener);
     QCOMPARE(state.epoch, 2);
+    QVERIFY(!state.active);
+  }
+
+  void connectorRequiresValidReadyAndGrantTransitions()
+  {
+    const InputState initial;
+    const InputPoll request{0, 100, true, false, {}};
+    const InputState localGrant{InputSide::Connector, 1, 100, {}};
+    validateLeaseTransition(initial, InputState::decode(localGrant.encode()), request);
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(initial, localGrant, {}), Error);
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(initial, {InputSide::Connector, 2, 100, {}}, request), Error);
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(initial, {InputSide::Connector, 1, 99, {}}, request), Error);
+    const InputState offer{InputSide::Listener, 1, 250, {}};
+    validateLeaseTransition(initial, offer, {});
+    const InputState active{InputSide::Listener, 1, 250, {}, true};
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(offer, active, {}), Error);
+    validateLeaseTransition(offer, InputState::decode(active.encode()), {1, 0, false, false, {}, true});
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(active, offer, {}), Error);
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(active, localGrant, {}), Error);
+
+    const InputState packet{InputSide::Listener, 1, 250, {{InputKind::Key, 29, 1}}, true};
+    validateLeaseTransition(active, InputState::decode(packet.encode()), {});
+    QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(offer, packet, {}), Error);
+  }
+
+  void movementCoalescesWithoutReorderingPressedInputs()
+  {
+    QList<InputEvent> pending;
+    QVERIFY(queueInputEvent(pending, {InputKind::Move, 0, 0}));
+    QVERIFY(pending.isEmpty());
+    QVERIFY(queueInputEvent(pending, {InputKind::Move, 8000, -8000}));
+    QVERIFY(queueInputEvent(pending, {InputKind::Move, 500, -500}));
+    QVERIFY(queueInputEvent(pending, {InputKind::Key, 29, 1}));
+    QVERIFY(queueInputEvent(pending, {InputKind::Move, -90, 100}));
+    QVERIFY(queueInputEvent(pending, {InputKind::Key, 29, 0}));
+    QCOMPARE(pending.size(), 4);
+    QCOMPARE(pending.at(0).first, 8192);
+    QCOMPARE(pending.at(0).second, -8192);
+    QCOMPARE(pending.at(1).kind, InputKind::Key);
+    QCOMPARE(pending.at(1).second, 1);
+    QCOMPARE(pending.at(2).kind, InputKind::Move);
+    QCOMPARE(pending.at(3).second, 0);
+
+    while (pending.size() < MaxInputEvents)
+      QVERIFY(queueInputEvent(pending, {InputKind::Button, 1, 0}));
+    QVERIFY(!queueInputEvent(pending, {InputKind::Key, 29, 0}));
   }
 };
 

@@ -127,5 +127,8 @@ target_link_libraries(${target}
 
 if(BUILD_ENHANCED)
   target_sources(${target} PRIVATE dialogs/FileTransferDialog.cpp dialogs/FileTransferDialog.h)
+  if(WIN32)
+    target_sources(${target} PRIVATE dialogs/EnhancedInputDialog.cpp dialogs/EnhancedInputDialog.h)
+  endif()
   target_link_libraries(${target} PRIVATE enhanced)
 endif()

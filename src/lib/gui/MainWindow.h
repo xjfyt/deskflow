@@ -146,6 +146,7 @@ private:
   void showHelpViewer() const;
 
   bool canRunCore() const;
+  bool enhancedInputActive() const;
 
   /**
    * @brief trustedFingerprintDatabase get the FingerprintDatabase for the trusted clients or trusted servers.

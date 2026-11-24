@@ -22,6 +22,9 @@
 
 #ifdef DESKFLOW_ENHANCED
 #include "dialogs/FileTransferDialog.h"
+#ifdef Q_OS_WIN
+#include "dialogs/EnhancedInputDialog.h"
+#endif
 #endif
 
 #include "common/PlatformInfo.h"
@@ -407,6 +410,9 @@ void MainWindow::coreProcessError(CoreProcess::Error error)
 
 void MainWindow::startCore()
 {
+  if (enhancedInputActive())
+    return;
+
   // No Mode Set
   if (m_coreProcess.mode() == CoreMode::None) {
     qDebug().noquote() << "skipping core start, no mode set";
@@ -499,7 +505,8 @@ void MainWindow::openSettings()
 
 void MainWindow::resetCore()
 {
-  m_coreProcess.restart();
+  if (!enhancedInputActive())
+    m_coreProcess.restart();
 }
 
 void MainWindow::showMyFingerprint()
@@ -685,6 +692,23 @@ void MainWindow::createMenuBar()
     dialog->raise();
     dialog->activateWindow();
   });
+#ifdef Q_OS_WIN
+  m_menuFile->addAction(tr("Enhanced Input (Windows Preview)…"), this, [this] {
+    auto *dialog = findChild<EnhancedInputDialog *>();
+    if (!dialog) {
+      dialog = new EnhancedInputDialog(this);
+      dialog->setAttribute(Qt::WA_DeleteOnClose);
+      connect(&m_coreProcess, &CoreProcess::processStateChanged, dialog, [dialog](ProcessState state) {
+        dialog->setClassicStopped(state == ProcessState::Stopped);
+      });
+      connect(dialog, &EnhancedInputDialog::activeChanged, this, [this] { toggleCanRunCore(canRunCore()); });
+    }
+    dialog->setClassicStopped(m_coreProcess.processState() == ProcessState::Stopped);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
+  });
+#endif
 #endif
   m_menuFile->addSeparator();
   m_menuFile->addAction(m_actionQuit);
@@ -943,6 +967,11 @@ void MainWindow::closeEvent(QCloseEvent *event)
     Settings::setValue(Settings::Gui::AutoStartCore, m_coreProcess.isStarted());
   }
   qDebug() << "quitting application";
+
+#if defined(DESKFLOW_ENHANCED) && defined(Q_OS_WIN)
+  if (auto *dialog = findChild<EnhancedInputDialog *>())
+    dialog->stop();
+#endif
 
   // any connected dock view acitons will be triggered
   // disconnect them before accepting the event
@@ -1268,6 +1297,7 @@ void MainWindow::daemonIpcClientConnectionFailed()
 
 void MainWindow::toggleCanRunCore(bool enableButtons)
 {
+  enableButtons = enableButtons && !enhancedInputActive();
   const bool isStarted = m_coreProcess.isStarted();
   ui->btnToggleCore->setEnabled(enableButtons);
   ui->btnRestartCore->setEnabled(enableButtons && isStarted);
@@ -1377,4 +1407,14 @@ bool MainWindow::canRunCore() const
   const bool isServer = mode == Settings::CoreMode::Server;
   const bool isClient = mode == Settings::CoreMode::Client;
   return ((isServer || isClient) && (isClient && !ui->cbHostname->currentText().isEmpty()) || isServer);
+}
+
+bool MainWindow::enhancedInputActive() const
+{
+#if defined(DESKFLOW_ENHANCED) && defined(Q_OS_WIN)
+  const auto *dialog = findChild<EnhancedInputDialog *>();
+  return dialog && dialog->isActive();
+#else
+  return false;
+#endif
 }

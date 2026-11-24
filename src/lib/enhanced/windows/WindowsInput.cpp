@@ -22,7 +22,11 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <cstdlib>
+#include <cwchar>
+#include <memory>
 #include <mutex>
 #include <utility>
 
@@ -35,7 +39,9 @@ using namespace std::chrono_literals;
 constexpr int Watchdog = 600;
 constexpr ULONG_PTR InjectionTag = 0x44464558;
 constexpr int EdgePadding = 12;
-constexpr char InputCapability = '\x02';
+constexpr int TakeoverDistance = 8;
+constexpr auto TakeoverWindow = 250ms;
+constexpr size_t MaxPressedInputs = 2 * 255 + 5;
 std::atomic_bool consoleInterrupted = false;
 
 BOOL WINAPI interruptConsole(DWORD reason)
@@ -64,7 +70,31 @@ struct InputOptions
   quint16 port;
   bool listener;
   bool rightEdge;
+  HANDLE guiPipe;
 };
+
+void reportState(HANDLE guiPipe, const char *state, const char *message)
+{
+  QTextStream output(stdout);
+  if (guiPipe)
+    output << "DFEX_STATE " << state << Qt::endl;
+  else
+    output << message << Qt::endl;
+}
+
+bool guiStopRequested(HANDLE pipe)
+{
+  if (!pipe)
+    return false;
+  DWORD available = 0;
+  if (!PeekNamedPipe(pipe, nullptr, 0, nullptr, &available, nullptr))
+    return true;
+  if (available == 0)
+    return false;
+  char command = 0;
+  DWORD read = 0;
+  return !ReadFile(pipe, &command, 1, &read, nullptr) || read == 0 || command == 'Q';
+}
 
 InputPoll takePoll(Exchange &exchange)
 {
@@ -75,12 +105,15 @@ InputPoll takePoll(Exchange &exchange)
 void publish(Exchange &exchange, const InputState &state, InputSide localSide)
 {
   std::lock_guard lock(exchange.mutex);
-  if (exchange.inbound.epoch != state.epoch || exchange.inbound.owner != state.owner)
-    exchange.inbound = {state.owner, state.epoch, state.verticalPosition, {}};
+  if (exchange.inbound.epoch != state.epoch || exchange.inbound.owner != state.owner ||
+      exchange.inbound.active != state.active) {
+    exchange.inbound = {state.owner, state.epoch, state.verticalPosition, {}, state.active};
+  }
   if (state.owner != localSide) {
-    if (exchange.inbound.events.size() + state.events.size() > MaxInputEvents)
-      throw Error(QStringLiteral("Enhanced input playback queue overflow."));
-    exchange.inbound.events.append(state.events);
+    for (const auto &event : state.events) {
+      if (!queueInputEvent(exchange.inbound.events, event))
+        throw Error(QStringLiteral("Enhanced input playback queue overflow."));
+    }
   }
   exchange.lastUpdate = Clock::now();
 }
@@ -89,45 +122,65 @@ void runNetwork(Exchange &exchange, const InputOptions &options)
 {
   QTcpSocket outgoing;
   std::unique_ptr<QTcpSocket> incoming;
+  std::unique_ptr<TlsChannel> authenticated;
   if (options.listener) {
     QTcpServer server;
     listen(server, options.address, options.port);
-    QTextStream(stdout) << "Waiting for a verified enhanced input peer…" << Qt::endl;
-    incoming = accept(server, QDeadlineTimer(120000), exchange.cancelled);
+    const QDeadlineTimer deadline(120000);
+    while (!authenticated) {
+      incoming = accept(server, deadline, exchange.cancelled);
+      try {
+        authenticated = std::make_unique<TlsChannel>(
+            *incoming, options.identity, options.pin, exchange.cancelled, true,
+            (std::min)(deadline, QDeadlineTimer(5000))
+        );
+      } catch (const PeerHandshakeError &) {
+        incoming.reset();
+      }
+    }
   } else {
     connectSocket(outgoing, options.address, options.port, QDeadlineTimer(5000), exchange.cancelled);
+    authenticated = std::make_unique<TlsChannel>(
+        outgoing, options.identity, options.pin, exchange.cancelled, false, QDeadlineTimer(5000)
+    );
   }
 
-  TlsChannel channel(
-      options.listener ? *incoming : outgoing, options.identity, options.pin, exchange.cancelled, options.listener,
-      QDeadlineTimer(5000)
-  );
-  channel.send(Message::Hello, QByteArray(1, InputCapability));
-  if (channel.receive(Message::Hello, 1, 1).at(0) != InputCapability)
+  auto &channel = *authenticated;
+  const QByteArray capability("\x02\x02", 2); // Input control, two-phase lease.
+  channel.send(Message::Hello, capability, QDeadlineTimer(5000));
+  if (channel.receive(Message::Hello, capability.size(), capability.size(), QDeadlineTimer(5000)) != capability)
     throw Error(QStringLiteral("The verified peer does not support this enhanced input session."));
 
   InputState lease;
+  Clock::time_point pendingUntil{};
   while (!exchange.cancelled.load(std::memory_order_relaxed)) {
     const QDeadlineTimer deadline(Watchdog);
     if (options.listener) {
       const auto peer =
           InputPoll::decode(channel.receive(Message::InputPoll, InputHeaderSize, MaxInputPacket, deadline));
-      advanceLease(lease, takePoll(exchange), peer);
+      const auto local = takePoll(exchange);
+      const auto now = Clock::now();
+      const auto previousEpoch = lease.epoch;
+      if (lease.owner != InputSide::None && !lease.active && now >= pendingUntil) {
+        lease.owner = InputSide::None;
+        lease.events.clear();
+      } else {
+        advanceLease(lease, local, peer);
+      }
+      if (lease.epoch != previousEpoch)
+        pendingUntil = now + std::chrono::milliseconds(Watchdog);
       publish(exchange, lease, InputSide::Listener);
       if (lease.owner == InputSide::Connector)
         lease.events.clear();
       channel.send(Message::InputState, lease.encode(), deadline);
     } else {
-      channel.send(Message::InputPoll, takePoll(exchange).encode(), deadline);
+      const auto sent = takePoll(exchange);
+      channel.send(Message::InputPoll, sent.encode(), deadline);
       const auto state =
           InputState::decode(channel.receive(Message::InputState, InputHeaderSize, MaxInputPacket, deadline));
-      if (state.epoch < lease.epoch ||
-          (state.epoch == lease.epoch && state.owner != InputSide::None && state.owner != lease.owner) ||
-          (state.owner == InputSide::Connector && !state.events.isEmpty())) {
-        throw Error(QStringLiteral("Invalid enhanced input lease transition."));
-      }
+      validateLeaseTransition(lease, state, sent);
       publish(exchange, state, InputSide::Connector);
-      lease = {state.owner, state.epoch, state.verticalPosition, {}};
+      lease = {state.owner, state.epoch, state.verticalPosition, {}, state.active};
       QThread::msleep(8);
     }
   }
@@ -139,6 +192,8 @@ struct Desktop
   LONG top;
   LONG width;
   LONG height;
+
+  bool operator==(const Desktop &) const = default;
 };
 
 Desktop desktop()
@@ -147,6 +202,44 @@ Desktop desktop()
       GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN), GetSystemMetrics(SM_CXVIRTUALSCREEN),
       GetSystemMetrics(SM_CYVIRTUALSCREEN)
   };
+}
+
+POINT clampToDisplay(POINT point, const RECT &display)
+{
+  return {std::clamp(point.x, display.left, display.right - 1), std::clamp(point.y, display.top, display.bottom - 1)};
+}
+
+bool displayAt(POINT point, RECT &display)
+{
+  MONITORINFO info{};
+  info.cbSize = sizeof(info);
+  if (!GetMonitorInfoW(MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST), &info))
+    return false;
+  display = info.rcMonitor;
+  return true;
+}
+
+struct EdgeDisplaySearch
+{
+  LONG edge;
+  LONG y;
+  bool right;
+  bool found = false;
+  POINT point{};
+};
+
+BOOL CALLBACK findDisplayAtEdge(HMONITOR, HDC, LPRECT display, LPARAM data)
+{
+  auto &search = *reinterpret_cast<EdgeDisplaySearch *>(data);
+  if ((search.right ? display->right - 1 : display->left) != search.edge)
+    return TRUE;
+
+  const auto point = clampToDisplay({search.edge + (search.right ? -EdgePadding : EdgePadding), search.y}, *display);
+  if (!search.found || std::abs(point.y - search.y) < std::abs(search.point.y - search.y)) {
+    search.found = true;
+    search.point = point;
+  }
+  return TRUE;
 }
 
 bool interactiveDesktop()
@@ -165,7 +258,20 @@ bool interactiveDesktop()
           GetThreadDesktop(GetCurrentThreadId()), UOI_NAME, current.data(), sizeof(current), &currentLength
       );
   CloseDesktop(input);
-  return readable && name == current;
+  return readable && name == current && std::wcscmp(name.data(), L"Default") == 0;
+}
+
+bool unelevatedProcess()
+{
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+    return false;
+  TOKEN_ELEVATION elevation{};
+  DWORD length = 0;
+  const bool allowed = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &length) &&
+                       elevation.TokenIsElevated == 0;
+  CloseHandle(token);
+  return allowed;
 }
 
 bool moveCursor(const Desktop &bounds, POINT point)
@@ -179,7 +285,7 @@ bool moveCursor(const Desktop &bounds, POINT point)
   return SendInput(1, &input, sizeof(input)) == 1;
 }
 
-bool inject(const InputEvent &event)
+INPUT nativeInput(const InputEvent &event)
 {
   INPUT input{};
   if (event.kind == InputKind::Key) {
@@ -207,6 +313,12 @@ bool inject(const InputEvent &event)
         input.mi.mouseData = index == 3 ? XBUTTON1 : XBUTTON2;
     }
   }
+  return input;
+}
+
+bool inject(const InputEvent &event)
+{
+  auto input = nativeInput(event);
   return SendInput(1, &input, sizeof(input)) == 1;
 }
 
@@ -236,11 +348,12 @@ public:
   WindowsInput(Exchange &exchange, const InputOptions &options)
       : m_exchange(exchange),
         m_side(options.listener ? InputSide::Listener : InputSide::Connector),
-        m_rightEdge(options.rightEdge)
+        m_rightEdge(options.rightEdge),
+        m_guiPipe(options.guiPipe)
   {
     s_current = this;
     for (size_t key = VK_BACK; key < m_physicalKeys.size(); ++key) {
-      if (key != VK_CONTROL && key != VK_SHIFT && key != VK_MENU)
+      if (key != VK_CONTROL && key != VK_SHIFT && key != VK_MENU && key != VK_PAUSE)
         m_physicalKeys[key] = (GetAsyncKeyState(static_cast<int>(key)) & 0x8000) != 0;
     }
     static constexpr std::array mouseKeys{VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
@@ -251,6 +364,8 @@ public:
   ~WindowsInput()
   {
     stopLease();
+    if (!m_injected.isEmpty())
+      QTextStream(stderr) << "Windows did not accept all injected input releases on this desktop." << Qt::endl;
     if (m_mouse)
       UnhookWindowsHookEx(m_mouse);
     if (m_keyboard)
@@ -279,10 +394,13 @@ public:
       lastUpdate = m_exchange.lastUpdate;
     }
     const auto now = Clock::now();
-    if (consoleInterrupted.load(std::memory_order_relaxed) || m_exchange.cancelled.load(std::memory_order_relaxed) ||
+    if (guiStopRequested(m_guiPipe) || consoleInterrupted.load(std::memory_order_relaxed) ||
+        m_exchange.cancelled.load(std::memory_order_relaxed) ||
         (m_connected && now - lastUpdate > std::chrono::milliseconds(Watchdog))) {
       m_blocked = true;
+      m_exchange.cancelled.store(true, std::memory_order_relaxed);
       stopLease();
+      reportState(m_guiPipe, "local", "Local input restored.");
       QCoreApplication::quit();
       return;
     }
@@ -290,14 +408,16 @@ public:
       return;
     if (!m_connected) {
       m_connected = true;
-      QTextStream(stdout) << "Enhanced input paired. Move across the selected edge to control the peer." << Qt::endl;
+      reportState(m_guiPipe, "paired", "Enhanced input paired. Move across the selected edge to control the peer.");
     }
 
     if (now - m_desktopChecked > 200ms) {
       m_desktopChecked = now;
       if (!interactiveDesktop()) {
         m_blocked = true;
+        m_exchange.cancelled.store(true, std::memory_order_relaxed);
         stopLease();
+        reportState(m_guiPipe, "local", "Local input restored.");
         QCoreApplication::quit();
         return;
       }
@@ -308,13 +428,34 @@ public:
       m_epoch = state.epoch;
       m_owner = state.owner;
       m_blocked = false;
-      if (m_owner != InputSide::None) {
-        if (localInputDown() || !enter(state.verticalPosition))
+      m_active = false;
+      m_readied = false;
+      m_takeoverDistance = 0;
+      if (m_owner == InputSide::None)
+        reportState(m_guiPipe, "local", "Local input restored.");
+    }
+    if (m_owner != InputSide::None && !m_blocked && !m_active) {
+      if (localInputDown() || !m_injected.isEmpty() || (m_owner == m_side && now > m_requestUntil)) {
+        release();
+      } else if (state.active) {
+        m_active = true;
+        if (!enter(state.verticalPosition))
           release();
-      } else {
-        QTextStream(stdout) << "Local input restored." << Qt::endl;
+      } else if (m_owner != m_side && !m_readied) {
+        const auto bounds = desktop();
+        if (bounds.width < 2 * EdgePadding || bounds.height < 2 || !interactiveDesktop()) {
+          release();
+        } else {
+          std::lock_guard lock(m_exchange.mutex);
+          m_exchange.outbound = {m_epoch, 0, false, false, {}, true};
+          m_readied = true;
+        }
       }
     }
+    if (!receiving() && !m_injected.isEmpty())
+      stopLease();
+    if (m_active && !m_blocked && desktop() != m_leaseDesktop)
+      release();
     if (receiving()) {
       for (const auto &event : state.events) {
         if (!apply(event)) {
@@ -348,10 +489,15 @@ private:
 
   bool sending() const
   {
-    return m_owner == m_side && !m_blocked;
+    return m_active && m_owner == m_side && !m_blocked;
   }
 
   bool receiving() const
+  {
+    return m_active && peerOwnsLease();
+  }
+
+  bool peerOwnsLease() const
   {
     return m_owner != InputSide::None && m_owner != m_side && !m_blocked;
   }
@@ -366,34 +512,46 @@ private:
     const auto bounds = desktop();
     if (bounds.width < 2 * EdgePadding || bounds.height < 2)
       return false;
+    m_leaseDesktop = bounds;
     if (sending()) {
       POINT cursor{};
       if (!GetCursorPos(&cursor) || std::abs(cursor.x - edge(bounds)) > EdgePadding)
         return false;
-      m_returnPoint = cursor;
-      m_returnPoint.x += m_rightEdge ? -EdgePadding : EdgePadding;
-      m_anchor = {bounds.left + bounds.width / 2, bounds.top + bounds.height / 2};
+      RECT display{};
+      if (!displayAt(cursor, display))
+        return false;
+      m_returnPoint = clampToDisplay({cursor.x + (m_rightEdge ? -EdgePadding : EdgePadding), cursor.y}, display);
+      m_anchor = {display.left + (display.right - display.left) / 2, display.top + (display.bottom - display.top) / 2};
       if (!moveCursor(bounds, m_anchor))
         return false;
       m_captured = true;
-      QTextStream(stdout) << "Your physical input is controlling the peer." << Qt::endl;
+      reportState(m_guiPipe, "sending", "Your physical input is controlling the peer.");
     } else {
-      const auto y = bounds.top + MulDiv(verticalPosition, bounds.height - 1, 65535);
-      if (!moveCursor(bounds, {edge(bounds) + (m_rightEdge ? -EdgePadding : EdgePadding), y}))
+      EdgeDisplaySearch search{
+          edge(bounds), bounds.top + MulDiv(verticalPosition, bounds.height - 1, 65535), m_rightEdge
+      };
+      if (!EnumDisplayMonitors(nullptr, nullptr, findDisplayAtEdge, reinterpret_cast<LPARAM>(&search)) ||
+          !search.found || !moveCursor(bounds, search.point)) {
         return false;
-      QTextStream(stdout) << "The peer is controlling this computer. Use local input to take over." << Qt::endl;
+      }
+      m_playbackPoint = search.point;
+      reportState(m_guiPipe, "receiving", "The peer is controlling this computer. Use local input to take over.");
     }
     return true;
   }
 
   void stopLease()
   {
-    for (qsizetype i = m_injected.size(); i > 0; --i) {
-      auto event = m_injected.at(i - 1);
-      event.second &= ~1;
-      inject(event);
+    if (!m_injected.isEmpty()) {
+      std::array<INPUT, MaxPressedInputs> releases;
+      for (qsizetype i = 0; i < m_injected.size(); ++i) {
+        auto event = m_injected.at(m_injected.size() - 1 - i);
+        event.second &= ~1;
+        releases[static_cast<size_t>(i)] = nativeInput(event);
+      }
+      const auto inserted = SendInput(static_cast<UINT>(m_injected.size()), releases.data(), sizeof(INPUT));
+      m_injected.resize(m_injected.size() - inserted);
     }
-    m_injected.clear();
     if (m_captured) {
       const auto bounds = desktop();
       if (bounds.width > 1 && bounds.height > 1)
@@ -415,45 +573,45 @@ private:
     std::lock_guard lock(m_exchange.mutex);
     auto &poll = m_exchange.outbound;
     poll.epoch = m_epoch;
-    if (event.kind == InputKind::Move && !poll.events.isEmpty() && poll.events.last().kind == InputKind::Move) {
-      auto &previous = poll.events.last();
-      previous.first = static_cast<qint16>(std::clamp<int>(previous.first + event.first, -8192, 8192));
-      previous.second = static_cast<qint16>(std::clamp<int>(previous.second + event.second, -8192, 8192));
-      return;
-    }
-    if (poll.events.size() >= MaxInputEvents) {
+    if (!queueInputEvent(poll.events, event)) {
       m_exchange.cancelled.store(true, std::memory_order_relaxed);
       m_blocked = true;
-      return;
     }
-    poll.events.append(event);
   }
 
   bool apply(const InputEvent &event)
   {
     if (event.kind == InputKind::Move) {
-      POINT cursor{};
       const auto bounds = desktop();
-      if (!GetCursorPos(&cursor) || bounds.width < 2 || bounds.height < 2)
+      if (bounds.width < 2 || bounds.height < 2)
         return false;
-      const auto x = cursor.x + event.first;
-      if (m_injected.isEmpty() && event.first != 0 && (m_rightEdge ? x >= edge(bounds) : x <= edge(bounds)))
+      const POINT point{m_playbackPoint.x + event.first, m_playbackPoint.y + event.second};
+      const bool crossed =
+          m_rightEdge ? event.first > 0 && point.x >= edge(bounds) : event.first < 0 && point.x <= edge(bounds);
+      if (m_injected.isEmpty() && crossed)
         return false;
-      return moveCursor(bounds, {x, cursor.y + event.second});
+      RECT display{};
+      if (!displayAt(point, display))
+        return false;
+      m_playbackPoint = clampToDisplay(point, display);
+      return moveCursor(bounds, m_playbackPoint);
     }
+    if (event.kind == InputKind::Wheel)
+      return inject(event);
+
+    const auto existing = std::ranges::find_if(m_injected, [&event](const InputEvent &pressed) {
+      return pressed.kind == event.kind && pressed.first == event.first && (pressed.second & 2) == (event.second & 2);
+    });
+    const bool down = (event.second & 1) != 0;
+    const bool tracked = existing != m_injected.end();
+    if ((!down && !tracked) || (down && tracked && event.kind == InputKind::Button))
+      return true;
     if (!inject(event))
       return false;
-
-    if (event.kind == InputKind::Key || event.kind == InputKind::Button) {
-      const auto existing = std::ranges::find_if(m_injected, [&event](const InputEvent &pressed) {
-        return pressed.kind == event.kind && pressed.first == event.first && (pressed.second & 2) == (event.second & 2);
-      });
-      if ((event.second & 1) != 0) {
-        if (existing == m_injected.end())
-          m_injected.append(event);
-      } else if (existing != m_injected.end()) {
-        m_injected.erase(existing);
-      }
+    if (down && !tracked) {
+      m_injected.append(event);
+    } else if (!down) {
+      m_injected.erase(existing);
     }
     return true;
   }
@@ -464,25 +622,28 @@ private:
       return false;
     const auto key = static_cast<size_t>(event.vkCode);
     const bool down = message == WM_KEYDOWN || message == WM_SYSKEYDOWN;
-    m_physicalKeys[key] = down;
+    if (key != VK_PAUSE)
+      m_physicalKeys[key] = down;
     if (down && key == VK_F12 && (m_physicalKeys[VK_LCONTROL] || m_physicalKeys[VK_RCONTROL]) &&
         (m_physicalKeys[VK_LMENU] || m_physicalKeys[VK_RMENU]) &&
         (m_physicalKeys[VK_LSHIFT] || m_physicalKeys[VK_RSHIFT])) {
       m_exchange.cancelled.store(true, std::memory_order_relaxed);
       m_blocked = true;
-      stopLease();
+      m_swallowedKeys[key] = true;
       return true;
     }
-    if (receiving())
+    if (peerOwnsLease())
       release();
     const bool swallowed = m_swallowedKeys[key];
     if (!down)
       m_swallowedKeys[key] = false;
     if (!sending())
       return swallowed;
-    if (event.scanCode == 0 || event.scanCode > 255 || key == VK_PAUSE)
-      return swallowed;
+    if (key == VK_PAUSE)
+      return true;
     m_swallowedKeys[key] = down;
+    if (event.scanCode == 0 || event.scanCode > 255)
+      return true;
     const auto flags = static_cast<qint16>(((event.flags & LLKHF_EXTENDED) ? 2 : 0) | (down ? 1 : 0));
     enqueue({InputKind::Key, static_cast<qint16>(event.scanCode), flags});
     return true;
@@ -501,7 +662,9 @@ private:
       if (!button.second)
         m_swallowedButtons[index] = false;
     }
-    if (receiving()) {
+    if (peerOwnsLease()) {
+      if (message == WM_MOUSEMOVE && !physicalMouseTakeover(event.pt))
+        return receiving();
       release();
       return false;
     }
@@ -527,14 +690,31 @@ private:
     if (m_connected && m_owner == InputSide::None && message == WM_MOUSEMOVE && !localInputDown()) {
       const auto bounds = desktop();
       const auto now = Clock::now();
-      if (bounds.width > 1 && bounds.height > 1 && event.pt.x == edge(bounds) && now >= m_nextRequest) {
+      POINT previous{};
+      if (bounds.width > 1 && bounds.height > 1 && event.pt.x == edge(bounds) && now >= m_nextRequest &&
+          GetCursorPos(&previous) && (m_rightEdge ? previous.x < event.pt.x : previous.x > event.pt.x)) {
         const auto y = std::clamp(event.pt.y - bounds.top, 0L, bounds.height - 1);
         std::lock_guard lock(m_exchange.mutex);
         m_exchange.outbound = {m_epoch, static_cast<quint16>(MulDiv(y, 65535, bounds.height - 1)), true, false, {}};
         m_nextRequest = now + 250ms;
+        m_requestUntil = now + std::chrono::milliseconds(Watchdog);
       }
     }
     return swallowed;
+  }
+
+  bool physicalMouseTakeover(POINT point)
+  {
+    POINT previous{};
+    if (!GetCursorPos(&previous))
+      return true;
+    const auto now = Clock::now();
+    if (now >= m_takeoverUntil) {
+      m_takeoverUntil = now + TakeoverWindow;
+      m_takeoverDistance = 0;
+    }
+    m_takeoverDistance += std::abs(point.x - previous.x) + std::abs(point.y - previous.y);
+    return m_takeoverDistance >= TakeoverDistance;
   }
 
   static inline WindowsInput *s_current = nullptr;
@@ -542,22 +722,30 @@ private:
   Exchange &m_exchange;
   const InputSide m_side;
   const bool m_rightEdge;
+  const HANDLE m_guiPipe;
   InputSide m_owner = InputSide::None;
   quint32 m_epoch = 0;
   HHOOK m_mouse = nullptr;
   HHOOK m_keyboard = nullptr;
   bool m_connected = false;
   bool m_blocked = false;
+  bool m_active = false;
+  bool m_readied = false;
   bool m_captured = false;
   POINT m_anchor{};
   POINT m_returnPoint{};
+  POINT m_playbackPoint{};
+  Desktop m_leaseDesktop{};
   QList<InputEvent> m_injected;
   std::array<bool, 256> m_physicalKeys{};
   std::array<bool, 256> m_swallowedKeys{};
   std::array<bool, 5> m_physicalButtons{};
   std::array<bool, 5> m_swallowedButtons{};
   Clock::time_point m_nextRequest{};
+  Clock::time_point m_requestUntil{};
   Clock::time_point m_desktopChecked{};
+  Clock::time_point m_takeoverUntil{};
+  LONG m_takeoverDistance = 0;
 };
 
 } // namespace
@@ -591,7 +779,10 @@ int windowsInputCommand(int argc, char **argv)
   const QCommandLineOption port(
       QStringLiteral("port"), QStringLiteral("Enhanced input port."), QStringLiteral("port"), QStringLiteral("24803")
   );
-  parser.addOptions({certificate, peer, address, edge, port});
+  const QCommandLineOption guiSession(
+      QStringLiteral("gui-session"), QStringLiteral("Run with a GUI-owned stdin control pipe.")
+  );
+  parser.addOptions({certificate, peer, address, edge, port, guiSession});
   auto arguments = QCoreApplication::arguments();
   arguments.removeAt(1);
   parser.process(arguments);
@@ -613,9 +804,21 @@ int windowsInputCommand(int argc, char **argv)
     const auto identity = loadIdentity(parser.value(certificate));
     if (identity.fingerprint == pin)
       throw Error(QStringLiteral("Enter the fingerprint of the other computer."));
+    if (!unelevatedProcess())
+      throw Error(QStringLiteral("Start experimental Windows control from a standard, non-elevated desktop session."));
+    HANDLE guiPipe = nullptr;
+    if (parser.isSet(guiSession)) {
+      guiPipe = GetStdHandle(STD_INPUT_HANDLE);
+      if (!guiPipe || guiPipe == INVALID_HANDLE_VALUE || GetFileType(guiPipe) != FILE_TYPE_PIPE)
+        throw Error(QStringLiteral("A GUI input session requires a redirected stdin pipe."));
+    }
     const InputOptions options{
-        identity, pin, ip, bindPort, mode == QStringLiteral("listen"), localEdge == QStringLiteral("right")
+        identity, pin, ip, bindPort, mode == QStringLiteral("listen"), localEdge == QStringLiteral("right"), guiPipe
     };
+
+    QSharedMemory enhancedLock(WindowsEnhancedInputLockName);
+    if (!enhancedLock.create(1))
+      throw Error(QStringLiteral("An enhanced input session is already running in this Windows session."));
 
     QSharedMemory classicLock(kCoreBinName);
     if (classicLock.attach())
@@ -642,6 +845,7 @@ int windowsInputCommand(int argc, char **argv)
     timer.setTimerType(Qt::PreciseTimer);
     QObject::connect(&timer, &QTimer::timeout, &app, [&] { input.tick(); });
     timer.start(8);
+    reportState(guiPipe, "waiting", "Waiting for a verified enhanced input peer.");
     network->start();
     QCoreApplication::exec();
     exchange.cancelled.store(true, std::memory_order_relaxed);

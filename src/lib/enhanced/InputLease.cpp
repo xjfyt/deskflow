@@ -9,10 +9,17 @@
 
 #include <QtEndian>
 
+#include <algorithm>
 #include <limits>
 
 namespace deskflow::enhanced {
 namespace {
+
+constexpr quint8 Request = 1;
+constexpr quint8 Release = 2;
+constexpr quint8 Ready = 4;
+constexpr quint8 Active = 0x80;
+constexpr int MaxMovement = 8192;
 
 QByteArray encode(quint8 flags, quint32 epoch, quint16 position, const QList<InputEvent> &events)
 {
@@ -36,7 +43,7 @@ bool valid(const InputEvent &event)
 {
   switch (event.kind) {
   case InputKind::Move:
-    return qAbs(static_cast<int>(event.first)) <= 8192 && qAbs(static_cast<int>(event.second)) <= 8192;
+    return qAbs(static_cast<int>(event.first)) <= MaxMovement && qAbs(static_cast<int>(event.second)) <= MaxMovement;
   case InputKind::Wheel:
     return (event.first == 0) != (event.second == 0);
   case InputKind::Button:
@@ -69,7 +76,9 @@ QList<InputEvent> decodeEvents(QByteArrayView data)
 
 QByteArray InputPoll::encode() const
 {
-  return enhanced::encode((request ? 1 : 0) | (release ? 2 : 0), epoch, verticalPosition, events);
+  return enhanced::encode(
+      (request ? Request : 0) | (release ? Release : 0) | (ready ? Ready : 0), epoch, verticalPosition, events
+  );
 }
 
 InputPoll InputPoll::decode(QByteArrayView data)
@@ -77,26 +86,32 @@ InputPoll InputPoll::decode(QByteArrayView data)
   auto events = decodeEvents(data);
   const auto flags = static_cast<quint8>(data[0]);
   const auto epoch = qFromBigEndian<quint32>(data.data() + 1);
-  if (flags > 2 || (flags != 0 && !events.isEmpty()) || (!events.isEmpty() && epoch == 0))
+  if ((flags != 0 && flags != Request && flags != Release && flags != Ready) || (flags != 0 && !events.isEmpty()) ||
+      (epoch == 0 && (flags == Ready || flags == Release || !events.isEmpty())))
     throw Error(QStringLiteral("Invalid enhanced input request."));
-  return {epoch, qFromBigEndian<quint16>(data.data() + 5), flags == 1, flags == 2, std::move(events)};
+  return {
+      epoch,         qFromBigEndian<quint16>(data.data() + 5), flags == Request, flags == Release, std::move(events),
+      flags == Ready
+  };
 }
 
 QByteArray InputState::encode() const
 {
-  return enhanced::encode(static_cast<quint8>(owner), epoch, verticalPosition, events);
+  return enhanced::encode(static_cast<quint8>(owner) | (active ? Active : 0), epoch, verticalPosition, events);
 }
 
 InputState InputState::decode(QByteArrayView data)
 {
   auto events = decodeEvents(data);
-  const auto owner = static_cast<InputSide>(data[0]);
+  const auto flags = static_cast<quint8>(data[0]);
+  const auto owner = static_cast<InputSide>(flags & ~Active);
+  const bool active = (flags & Active) != 0;
   const auto epoch = qFromBigEndian<quint32>(data.data() + 1);
-  if (owner > InputSide::Connector || (owner == InputSide::None && !events.isEmpty()) ||
+  if (owner > InputSide::Connector || (owner == InputSide::None && active) || (!active && !events.isEmpty()) ||
       (owner != InputSide::None && epoch == 0)) {
     throw Error(QStringLiteral("Invalid enhanced input lease."));
   }
-  return {owner, epoch, qFromBigEndian<quint16>(data.data() + 5), std::move(events)};
+  return {owner, epoch, qFromBigEndian<quint16>(data.data() + 5), std::move(events), active};
 }
 
 void advanceLease(InputState &state, const InputPoll &listener, const InputPoll &connector)
@@ -106,11 +121,16 @@ void advanceLease(InputState &state, const InputPoll &listener, const InputPoll 
   if (state.owner != InputSide::None) {
     if (releases(listener) || releases(connector)) {
       state.owner = InputSide::None;
+      state.active = false;
       return;
     }
     const auto &owner = state.owner == InputSide::Listener ? listener : connector;
-    if (owner.epoch == state.epoch)
+    const auto &target = state.owner == InputSide::Listener ? connector : listener;
+    if (!state.active) {
+      state.active = target.ready && target.epoch == state.epoch;
+    } else if (owner.epoch == state.epoch) {
       state.events = owner.events;
+    }
     return;
   }
   const bool listenerRequest = listener.request && listener.epoch == state.epoch;
@@ -122,6 +142,47 @@ void advanceLease(InputState &state, const InputPoll &listener, const InputPoll 
   ++state.epoch;
   state.owner = listenerRequest ? InputSide::Listener : InputSide::Connector;
   state.verticalPosition = listenerRequest ? listener.verticalPosition : connector.verticalPosition;
+}
+
+void validateLeaseTransition(const InputState &previous, const InputState &next, const InputPoll &sent)
+{
+  bool valid = false;
+  if (next.epoch != previous.epoch) {
+    const bool localRequest =
+        sent.request && sent.epoch == previous.epoch && sent.verticalPosition == next.verticalPosition;
+    valid = previous.owner == InputSide::None && previous.epoch < std::numeric_limits<quint32>::max() &&
+            next.epoch == previous.epoch + 1 && !next.active && next.events.isEmpty() &&
+            (next.owner == InputSide::Listener || (next.owner == InputSide::Connector && localRequest));
+  } else if (next.owner == InputSide::None) {
+    valid = !next.active && next.events.isEmpty();
+  } else if (next.owner == previous.owner && next.verticalPosition == previous.verticalPosition) {
+    if (previous.active) {
+      valid = next.active && (next.owner == InputSide::Listener || next.events.isEmpty());
+    } else {
+      valid = next.events.isEmpty() &&
+              (!next.active || next.owner == InputSide::Connector || (sent.ready && sent.epoch == next.epoch));
+    }
+  }
+  if (!valid)
+    throw Error(QStringLiteral("Invalid enhanced input lease transition."));
+}
+
+bool queueInputEvent(QList<InputEvent> &queue, InputEvent event)
+{
+  if (event.kind == InputKind::Move) {
+    if (event.first == 0 && event.second == 0)
+      return true;
+    if (!queue.isEmpty() && queue.last().kind == InputKind::Move) {
+      auto &last = queue.last();
+      last.first = static_cast<qint16>(std::clamp(last.first + event.first, -MaxMovement, MaxMovement));
+      last.second = static_cast<qint16>(std::clamp(last.second + event.second, -MaxMovement, MaxMovement));
+      return true;
+    }
+  }
+  if (queue.size() >= MaxInputEvents)
+    return false;
+  queue.append(event);
+  return true;
 }
 
 } // namespace deskflow::enhanced

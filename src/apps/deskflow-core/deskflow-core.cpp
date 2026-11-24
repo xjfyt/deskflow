@@ -10,9 +10,9 @@
 
 #ifdef DESKFLOW_ENHANCED
 #include "EnhancedFileCommand.h"
+#endif
 #ifdef Q_OS_WIN
 #include "enhanced/windows/WindowsInput.h"
-#endif
 #endif
 
 #include "arch/Arch.h"
@@ -127,9 +127,23 @@ int main(int argc, char **argv)
   if (sharedMemory.attach())
     sharedMemory.detach();
 
-  if (!sharedMemory.create(1) && parser.singleInstanceOnly()) {
-    LOG_WARN("an instance of deskflow core is already running");
-    return s_exitDuplicate;
+  if (!sharedMemory.create(1)) {
+    if (parser.singleInstanceOnly()) {
+      LOG_WARN("an instance of deskflow core is already running");
+      return s_exitDuplicate;
+    }
+#ifdef Q_OS_WIN
+    // Keep a classic attachment for the full lifetime, including explicit additional instances.
+    if (!sharedMemory.attach() && !sharedMemory.create(1) && !sharedMemory.attach()) {
+      LOG_WARN("could not register an additional classic core");
+      return s_exitDuplicate;
+    }
+    QSharedMemory enhancedLock(deskflow::enhanced::WindowsEnhancedInputLockName);
+    if (enhancedLock.attach(QSharedMemory::ReadOnly) || enhancedLock.error() == QSharedMemory::PermissionDenied) {
+      LOG_WARN("enhanced input is already using this desktop");
+      return s_exitDuplicate;
+    }
+#endif
   }
 
   parser.parse();

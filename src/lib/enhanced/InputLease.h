@@ -43,6 +43,7 @@ struct InputPoll
   bool request = false;
   bool release = false;
   QList<InputEvent> events;
+  bool ready = false;
 
   QByteArray encode() const;
   static InputPoll decode(QByteArrayView data);
@@ -54,11 +55,14 @@ struct InputState
   quint32 epoch = 0;
   quint16 verticalPosition = 0;
   QList<InputEvent> events;
+  bool active = false;
 
   QByteArray encode() const;
   static InputState decode(QByteArrayView data);
 };
 
 void advanceLease(InputState &state, const InputPoll &listener, const InputPoll &connector);
+void validateLeaseTransition(const InputState &previous, const InputState &next, const InputPoll &sent);
+bool queueInputEvent(QList<InputEvent> &queue, InputEvent event);
 
 } // namespace deskflow::enhanced
