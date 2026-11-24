@@ -12,7 +12,7 @@ TLS encryption is enabled by default. Wayland is supported. Clipboard sharing is
 
 ## Deskflow Enhanced
 
-`deskflow` 分支提供增强文件传输、接收端文件拖放，以及 Windows 双向输入预览。先查看 [使用说明](../docs/Enhanced.md) 和 [实机验收矩阵](../docs/ENHANCED_AUDIT.md)。私有仓库的 **Actions → Enhanced build** 可手动编译各平台并打包 Windows 便携文件。
+`deskflow` 分支提供增强文件传输、接收端文件拖放，以及 Windows 双向输入预览。先查看 [使用说明](../docs/Enhanced.md) 和 [实机验收矩阵](../docs/ENHANCED_AUDIT.md)。**Actions → Enhanced packages** 支持标签触发和手动构建。 [各平台包与发布流程](../docs/RELEASES.md)
 
 > [!TIP]
 >

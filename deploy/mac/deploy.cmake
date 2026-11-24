@@ -10,13 +10,16 @@ set(OS_STRING "macos-${BUILD_ARCHITECTURE}")
 
 if (OSX_BUNDLE)
   set(_codesign_identity "-")
+  set(_timestamp_arg "")
   if (APPLE_CODESIGN_DEV)
     set(_codesign_identity "${APPLE_CODESIGN_DEV}")
+    set(_timestamp_arg "-timestamp")
   endif()
   install(CODE "execute_process(COMMAND
-    ${DEPLOYQT}
+    \"${DEPLOYQT}\"
     \"\${CMAKE_INSTALL_PREFIX}/${CMAKE_PROJECT_PROPER_NAME}.app\"
-    -hardened-runtime -timestamp \"-codesign=${_codesign_identity}\"
+    -hardened-runtime ${_timestamp_arg} \"-codesign=${_codesign_identity}\"
+    COMMAND_ERROR_IS_FATAL ANY
   )")
   set(CPACK_PACKAGE_ICON "${MY_DIR}/dmg-volume.icns")
   set(CPACK_DMG_BACKGROUND_IMAGE "${MY_DIR}/dmg-background.tiff")

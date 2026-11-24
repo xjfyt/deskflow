@@ -1,6 +1,6 @@
 # Deskflow Enhanced 实施复核与验收矩阵
 
-复核日期为 2026-11-24。官方 `master` 仍为 `80221f0f7b7ebd807fb1ffdf00906bbcfe561011`。增强分支 `deskflow` 发布于私有仓库。上游同步与回归入口见 [维护说明](UPSTREAM_SYNC.md)。
+复核日期为 2026-11-24。官方基线为 `80221f0f7b7ebd807fb1ffdf00906bbcfe561011`。增强分支 `deskflow` 发布于公开仓库。上游同步与回归入口见 [维护说明](UPSTREAM_SYNC.md)。
 
 ## 原方案复核
 
@@ -36,6 +36,6 @@
 
 ## 构建与回退
 
-- Windows 可在 **Actions → Enhanced build** 手动编译私有分支。该工作流覆盖 Windows、macOS 和 Debian 的 x64/ARM64 对应 runner，产出 Windows 便携文件。远程构建和实机结果需分别记录。
+- **Actions → Enhanced packages** 支持标签触发和手动打包，覆盖 Windows、macOS 和 Debian 的 x64/ARM64 对应 runner。远程打包和实机结果需分别记录。 [打包与发布说明](RELEASES.md)
 - 可在 Linux/macOS 使用 Clang 配置 `-DBUILD_ENHANCED=ON -DBUILD_TESTS=ON -DENABLE_ENHANCED_FUZZ=ON -DSKIP_BUILD_TESTS=ON`，然后构建 `EnhancedDecoderFuzz`。执行 `EnhancedDecoderFuzz -max_len=262145 -max_total_time=60` 可覆盖协议帧、文件清单及两种租约数据解码。
 - 出现兼容问题时，通过窗口 **停止** 或热键退出增强输入，再启动经典 core。发版回退使用 `-DBUILD_ENHANCED=OFF`。文件接收保存在用户选择的本机目录。

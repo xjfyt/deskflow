@@ -3,8 +3,8 @@
 | 位置 | 用途 |
 | --- | --- |
 | `origin` | 官方 `deskflow/deskflow`，记录上游版本 |
-| `personal` | 私有 `xjfyt/deskflow`，维护增强版 |
-| `deskflow` | 私有仓库的默认分支，跟踪 `personal/deskflow` |
+| `personal` | 公开 `xjfyt/deskflow`，维护增强版 |
+| `deskflow` | 增强仓库的默认分支，跟踪 `personal/deskflow` |
 | `master` | 本地上游基线 |
 
 ## 核对上游

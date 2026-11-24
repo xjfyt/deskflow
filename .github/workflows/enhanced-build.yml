@@ -1,55 +1,100 @@
 # SPDX-FileCopyrightText: (C) 2026 Deskflow Enhanced contributors
 # SPDX-License-Identifier: MIT
 
-name: Enhanced build
+name: Enhanced packages
 
 on:
+  push:
+    tags:
+      - 'enhanced-ci-*'
+      - 'enhanced-v*'
   workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: enhanced-packages-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  compile:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      label: ${{ steps.version.outputs.label }}
+      release: ${{ steps.version.outputs.release }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - name: Validate package tag
+        id: version
+        shell: bash
+        run: |
+          release=false
+          prerelease=false
+          label="enhanced-preview-${GITHUB_SHA:0:9}"
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            label="$GITHUB_REF_NAME"
+            if [[ "$label" =~ ^enhanced-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]; then
+              release=true
+              if [[ "${label#enhanced-v}" == *-* ]]; then
+                prerelease=true
+              fi
+            elif [[ ! "$label" =~ ^enhanced-ci-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*$ ]]; then
+              echo "Invalid Deskflow Enhanced tag." >&2
+              exit 1
+            fi
+          fi
+          printf 'label=%s\nrelease=%s\nprerelease=%s\n' "$label" "$release" "$prerelease" >> "$GITHUB_OUTPUT"
+
+  package:
+    needs: version
     name: ${{ matrix.target.name }}
     runs-on: ${{ matrix.target.runner }}
     container: ${{ matrix.target.container }}
-    timeout-minutes: 40
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
         target:
           - name: Windows x64
+            id: windows-x64
             runner: windows-2022
             arch: amd64
             triplet: x64-windows-release
             qt: 6.9.3
           - name: Windows ARM64
+            id: windows-arm64
             runner: windows-11-arm
             arch: arm64
             triplet: arm64-windows
             qt: '6.12'
           - name: macOS Apple Silicon
+            id: macos-arm64
             runner: macos-15
             qt: 6.9.3
           - name: macOS Intel
+            id: macos-x64
             runner: macos-15-intel
             qt: 6.9.3
           - name: Debian x64
+            id: debian-x64
             runner: ubuntu-latest
-            container: debian:stable-slim
+            container: debian:trixie-slim
             like: debian
+            deb-arch: amd64
           - name: Debian ARM64
+            id: debian-arm64
             runner: ubuntu-24.04-arm
-            container: debian:stable-slim
+            container: debian:trixie-slim
             like: debian
+            deb-arch: arm64
     steps:
       - name: Install checkout tools in the Linux container
         if: matrix.target.like == 'debian'
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y -qq ca-certificates git
+          apt-get install -y -qq ca-certificates git dpkg-dev
 
       - uses: actions/checkout@v6
         with:
@@ -70,35 +115,117 @@ jobs:
           vcpkg-triplet: ${{ matrix.target.triplet }}
           like: ${{ matrix.target.like }}
 
-      - name: Compile enhanced binaries and verification targets
+      - name: Configure and build
         shell: bash
+        env:
+          PACKAGE_LABEL: ${{ needs.version.outputs.label }}
         run: |
-          cmake -S . -B build/enhanced -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          extra=()
+          if [[ "$RUNNER_OS" == Linux ]]; then
+            extra+=(-DCMAKE_INSTALL_PREFIX=/usr)
+          elif [[ "$RUNNER_OS" == macOS ]]; then
+            extra+=(-DBUILD_OSX_BUNDLE=ON "-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)")
+          fi
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_ENHANCED=ON -DBUILD_TESTS=ON -DSKIP_BUILD_TESTS=ON \
-            -DBUILD_INSTALLER=OFF -DBUILD_OSX_BUNDLE=OFF \
+            -DBUILD_INSTALLER=ON "-DPACKAGE_VERSION_LABEL=$PACKAGE_LABEL" "${extra[@]}" \
             ${{ steps.dependencies.outputs.vcpkg-cmake-config }}
-          cmake --build build/enhanced --parallel 4
+          cmake --build build --parallel 4
 
-      - name: Compile the Windows classic fallback
-        if: runner.os == 'Windows'
+      - name: Package and inspect installers
         shell: bash
+        env:
+          DEB_ARCH: ${{ matrix.target.deb-arch }}
         run: |
-          cmake -S . -B build/classic -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_ENHANCED=OFF -DBUILD_TESTS=OFF -DBUILD_INSTALLER=OFF \
-            ${{ steps.dependencies.outputs.vcpkg-cmake-config }}
-          cmake --build build/classic --parallel 4
+          shopt -s nullglob
+          mkdir -p release
+          package() {
+            cpack --config build/CPackConfig.cmake -G "$1" -B "$PWD/packages" "${@:2}"
+          }
+          case "$RUNNER_OS" in
+            Windows)
+              package ZIP
+              package WIX
+              zip=(packages/*.zip)
+              msi=(packages/*.msi)
+              [[ ${#zip[@]} == 1 && ${#msi[@]} == 1 ]]
+              cmake -E tar tf "${zip[0]}" > package-contents.txt
+              grep -qE '(^|/)deskflow\.exe$' package-contents.txt
+              grep -qE '(^|/)deskflow-core\.exe$' package-contents.txt
+              cp "${zip[0]}" "${msi[0]}" release/
+              ;;
+            macOS)
+              package DragNDrop -D CPACK_DMG_DS_STORE_SETUP_SCRIPT= -D CPACK_DMG_SLA_USE_RESOURCE_FILE_LICENSE=OFF
+              dmg=(packages/*.dmg)
+              [[ ${#dmg[@]} == 1 ]]
+              hdiutil verify "${dmg[0]}"
+              cp "${dmg[0]}" release/
+              ;;
+            Linux)
+              package DEB
+              deb=(packages/*.deb)
+              [[ ${#deb[@]} == 1 ]]
+              [[ "$(dpkg-deb -f "${deb[0]}" Architecture)" == "$DEB_ARCH" ]]
+              dpkg-deb --contents "${deb[0]}" > package-contents.txt
+              grep -qE '/usr/bin/deskflow$' package-contents.txt
+              cp "${deb[0]}" release/
+              ;;
+            *)
+              echo "No packaging rule for $RUNNER_OS" >&2
+              exit 1
+              ;;
+          esac
+          (
+            cd release
+            cmake -E sha256sum * > "../SHA256SUMS"
+          )
+          cp SHA256SUMS "release/SHA256SUMS-${RUNNER_OS}-${RUNNER_ARCH}"
 
-      - name: Stage Windows package
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          cmake --install build/enhanced --prefix build/portable
-          printf '%s\n' "$GITHUB_SHA" > build/portable/BUILD_COMMIT.txt
-
-      - name: Upload Windows portable files
-        if: runner.os == 'Windows'
+      - name: Upload packages and checksums
         uses: actions/upload-artifact@v4
         with:
-          name: deskflow-enhanced-windows-${{ matrix.target.arch }}
-          path: build/portable
+          name: deskflow-package-${{ matrix.target.id }}
+          path: release/
           if-no-files-found: error
+
+  publish:
+    needs: [version, package]
+    if: needs.version.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deskflow-package-*
+          merge-multiple: true
+          path: release
+
+      - name: Verify and publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.label }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
+        run: |
+          cd release
+          shopt -s nullglob
+          checksums=(SHA256SUMS-*)
+          zip=(*.zip)
+          msi=(*.msi)
+          dmg=(*.dmg)
+          deb=(*.deb)
+          [[ ${#checksums[@]} == 6 && ${#zip[@]} == 2 && ${#msi[@]} == 2 && ${#dmg[@]} == 2 && ${#deb[@]} == 2 ]]
+          cat "${checksums[@]}" | sort -k2 > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists."
+            exit 0
+          fi
+          args=()
+          if [[ "$PRERELEASE" == true ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$TAG" "${zip[@]}" "${msi[@]}" "${dmg[@]}" "${deb[@]}" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes \
+            --title "Deskflow Enhanced ${TAG#enhanced-v}" "${args[@]}"
