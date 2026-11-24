@@ -40,12 +40,25 @@ protected:
   void reject() override;
 
 private:
+  enum class ArmedAction
+  {
+    None,
+    Clipboard,
+    FileDrop
+  };
+  enum class SendMethod
+  {
+    Files,
+    CutFiles,
+    FileDrop
+  };
+
   void addPaths(const QStringList &paths);
   void receive();
   void sendSelection();
-  void armClipboard();
+  void armSend(ArmedAction action);
   void clipboardChanged();
-  void start(const QStringList &sources, const QString &destination, bool copyCutFiles = false);
+  void start(const QStringList &sources, const QString &destination, SendMethod method = SendMethod::Files);
   bool acceptsFileDrop(const QDropEvent *event) const;
   void showReceived(enhanced::ReceivedFiles received);
   std::unique_ptr<QMimeData> receivedMime(const QStringList &paths);
@@ -61,13 +74,16 @@ private:
   QSpinBox *m_dataPort = nullptr;
   QWidget *m_settings = nullptr;
   QWidget *m_selectionActions = nullptr;
+  QLabel *m_sourceHeading = nullptr;
   QListWidget *m_selection = nullptr;
   QWidget *m_receivedPanel = nullptr;
   QListWidget *m_receivedItems = nullptr;
   QCheckBox *m_autoPublish = nullptr;
+  QCheckBox *m_allowFileDrop = nullptr;
   QPushButton *m_send = nullptr;
   QPushButton *m_receive = nullptr;
   QPushButton *m_arm = nullptr;
+  QPushButton *m_armDrop = nullptr;
   QPushButton *m_cancel = nullptr;
   QPushButton *m_copy = nullptr;
   QPushButton *m_openFolder = nullptr;
@@ -77,7 +93,7 @@ private:
   QTimer *m_armTimer = nullptr;
   std::atomic_bool m_cancelled = false;
   quint64 m_clipboardRevision = 0;
-  bool m_armed = false;
+  ArmedAction m_armed = ArmedAction::None;
 };
 
 } // namespace deskflow::gui

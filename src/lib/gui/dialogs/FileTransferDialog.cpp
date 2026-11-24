@@ -7,6 +7,7 @@
 
 #include "enhanced/FileManifest.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
 #include <QDesktopServices>
@@ -22,10 +23,12 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QMimeData>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSpinBox>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QThread>
 #include <QTimer>
 #include <QUrl>
@@ -146,8 +149,12 @@ bool isReceivedDirectory(const QFileInfo &directory)
 class ReceivedFilesList final : public QListWidget
 {
 public:
-  explicit ReceivedFilesList(std::function<std::unique_ptr<QMimeData>(const QStringList &)> createPayload)
-      : m_createPayload(std::move(createPayload))
+  ReceivedFilesList(
+      std::function<std::unique_ptr<QMimeData>(const QStringList &)> createPayload,
+      std::function<void(Qt::DropAction)> reportDrop
+  )
+      : m_createPayload(std::move(createPayload)),
+        m_reportDrop(std::move(reportDrop))
   {
     setSelectionMode(QAbstractItemView::ExtendedSelection);
     setDragDropMode(QAbstractItemView::DragOnly);
@@ -157,8 +164,9 @@ public:
 protected:
   void startDrag(Qt::DropActions) override
   {
+    const auto items = selectedItems();
     QStringList paths;
-    for (const auto *item : selectedItems())
+    for (const auto *item : items)
       paths.append(item->data(Qt::UserRole).toString());
     if (paths.isEmpty())
       return;
@@ -167,11 +175,16 @@ protected:
       return;
     auto *drag = new QDrag(this);
     drag->setMimeData(payload.release());
-    drag->exec(Qt::CopyAction, Qt::CopyAction);
+    drag->setPixmap(items.first()->icon().pixmap(32));
+    const QPointer<ReceivedFilesList> list(this);
+    const auto action = drag->exec(Qt::CopyAction, Qt::CopyAction);
+    if (list)
+      m_reportDrop(action);
   }
 
 private:
   std::function<std::unique_ptr<QMimeData>(const QStringList &)> m_createPayload;
+  std::function<void(Qt::DropAction)> m_reportDrop;
 };
 
 } // namespace
@@ -209,11 +222,13 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   settings->addRow(tr("Control and data ports"), ports);
   layout->addWidget(m_settings);
 
-  layout->addWidget(new QLabel(tr("Files and folders to send")));
+  m_sourceHeading = new QLabel;
+  layout->addWidget(m_sourceHeading);
   m_selection = new QListWidget;
   m_selection->setSelectionMode(QAbstractItemView::ExtendedSelection);
   m_selection->setDragDropMode(QAbstractItemView::DropOnly);
   m_selection->viewport()->installEventFilter(this);
+  m_sourceHeading->setBuddy(m_selection);
   layout->addWidget(m_selection);
 
   m_selectionActions = new QWidget;
@@ -232,16 +247,20 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   auto *actions = new QHBoxLayout;
   m_send = new QPushButton(tr("Send listed files"));
   m_arm = new QPushButton(tr("Send next file copy"));
+  m_armDrop = new QPushButton(tr("Send next file drop"));
   m_receive = new QPushButton(tr("Receive…"));
   m_cancel = new QPushButton(tr("Cancel"));
   actions->addWidget(m_send);
   actions->addWidget(m_arm);
+  actions->addWidget(m_armDrop);
   actions->addWidget(m_receive);
   actions->addWidget(m_cancel);
   layout->addLayout(actions);
 
   m_autoPublish = new QCheckBox(tr("Put received files on the clipboard if it stays unchanged"));
   layout->addWidget(m_autoPublish);
+  m_allowFileDrop = new QCheckBox(tr("Accept file drops for local placement"));
+  layout->addWidget(m_allowFileDrop);
   m_progress = new QProgressBar;
   m_progress->setRange(0, 100);
   layout->addWidget(m_progress);
@@ -259,7 +278,16 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   auto *dragHint = new QLabel(tr("Drag received files to a folder in this computer's file manager."));
   dragHint->setWordWrap(true);
   receivedLayout->addWidget(dragHint);
-  m_receivedItems = new ReceivedFilesList([this](const QStringList &paths) { return receivedMime(paths); });
+  m_receivedItems = new ReceivedFilesList(
+      [this](const QStringList &paths) { return receivedMime(paths); },
+      [this](Qt::DropAction action) {
+        m_status->setText(
+            action == Qt::CopyAction
+                ? tr("The local drop target accepted the drop.")
+                : tr("The local file drop was cancelled or declined. The received files are still available.")
+        );
+      }
+  );
   m_receivedItems->setAccessibleName(receivedName);
   m_receivedItems->setMaximumHeight(128);
   receivedLayout->addWidget(m_receivedItems);
@@ -295,7 +323,8 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
     refreshActions();
   });
   connect(m_send, &QPushButton::clicked, this, &FileTransferDialog::sendSelection);
-  connect(m_arm, &QPushButton::clicked, this, &FileTransferDialog::armClipboard);
+  connect(m_arm, &QPushButton::clicked, this, [this] { armSend(ArmedAction::Clipboard); });
+  connect(m_armDrop, &QPushButton::clicked, this, [this] { armSend(ArmedAction::FileDrop); });
   connect(m_receive, &QPushButton::clicked, this, &FileTransferDialog::receive);
   connect(m_cancel, &QPushButton::clicked, this, &FileTransferDialog::reject);
   connect(m_copy, &QPushButton::clicked, this, &FileTransferDialog::copyReceived);
@@ -309,8 +338,9 @@ FileTransferDialog::FileTransferDialog(QWidget *parent) : QDialog(parent)
   m_armTimer = new QTimer(this);
   m_armTimer->setSingleShot(true);
   connect(m_armTimer, &QTimer::timeout, this, [this] {
-    m_armed = false;
-    m_status->setText(tr("Clipboard capture expired."));
+    const bool waitingForDrop = m_armed == ArmedAction::FileDrop;
+    m_armed = ArmedAction::None;
+    m_status->setText(waitingForDrop ? tr("File drop expired.") : tr("Clipboard capture expired."));
     refreshActions();
   });
 
@@ -355,16 +385,25 @@ void FileTransferDialog::dropEvent(QDropEvent *event)
   if (!acceptsFileDrop(event))
     return;
   const auto paths = filePaths(event->mimeData()->urls());
-  if (!paths.isEmpty()) {
+  if (paths.isEmpty()) {
+    if (m_armed == ArmedAction::FileDrop)
+      m_status->setText(tr("Drop local files or folders to send them."));
+    return;
+  }
+  event->setDropAction(Qt::CopyAction);
+  event->accept();
+  if (m_armed == ArmedAction::FileDrop) {
+    m_armTimer->stop();
+    m_armed = ArmedAction::None;
+    start(paths, {}, SendMethod::FileDrop);
+  } else {
     addPaths(paths);
-    event->setDropAction(Qt::CopyAction);
-    event->accept();
   }
 }
 
 bool FileTransferDialog::acceptsFileDrop(const QDropEvent *event) const
 {
-  return !m_worker && !m_armed && event->source() != m_receivedItems &&
+  return !m_worker && m_armed != ArmedAction::Clipboard && event->source() != m_receivedItems &&
          event->possibleActions().testFlag(Qt::CopyAction) && event->mimeData()->hasUrls();
 }
 
@@ -393,10 +432,11 @@ void FileTransferDialog::reject()
   if (m_worker) {
     m_cancelled.store(true, std::memory_order_relaxed);
     m_status->setText(tr("Cancelling…"));
-  } else if (m_armed) {
+  } else if (m_armed != ArmedAction::None) {
     m_armTimer->stop();
-    m_armed = false;
-    m_status->setText(tr("Clipboard capture cancelled."));
+    const bool waitingForDrop = m_armed == ArmedAction::FileDrop;
+    m_armed = ArmedAction::None;
+    m_status->setText(waitingForDrop ? tr("File drop cancelled.") : tr("Clipboard capture cancelled."));
     refreshActions();
   } else {
     QDialog::reject();
@@ -405,7 +445,7 @@ void FileTransferDialog::reject()
 
 void FileTransferDialog::addPaths(const QStringList &paths)
 {
-  if (m_worker || m_armed)
+  if (m_worker || m_armed != ArmedAction::None)
     return;
   for (const auto &path : paths) {
     if (m_selection->findItems(path, Qt::MatchExactly).isEmpty())
@@ -432,7 +472,7 @@ void FileTransferDialog::sendSelection()
   start(paths, {});
 }
 
-void FileTransferDialog::armClipboard()
+void FileTransferDialog::armSend(ArmedAction action)
 {
   try {
     options();
@@ -440,8 +480,11 @@ void FileTransferDialog::armClipboard()
     m_status->setText(error.message);
     return;
   }
-  m_armed = true;
-  m_status->setText(tr("Copy a file or folder in your file manager within 90 seconds."));
+  m_armed = action;
+  m_status->setText(
+      action == ArmedAction::FileDrop ? tr("Drop files or folders into this window within 90 seconds.")
+                                      : tr("Copy a file or folder in your file manager within 90 seconds.")
+  );
   refreshActions();
   m_armTimer->start(90000);
 }
@@ -449,7 +492,7 @@ void FileTransferDialog::armClipboard()
 void FileTransferDialog::clipboardChanged()
 {
   ++m_clipboardRevision;
-  if (!m_armed)
+  if (m_armed != ArmedAction::Clipboard)
     return;
   const auto *data = QGuiApplication::clipboard()->mimeData();
   if (!data || data->hasFormat(ReceivedMime))
@@ -459,8 +502,8 @@ void FileTransferDialog::clipboardChanged()
     return;
 
   m_armTimer->stop();
-  m_armed = false;
-  start(selection.paths, {}, selection.cut);
+  m_armed = ArmedAction::None;
+  start(selection.paths, {}, selection.cut ? SendMethod::CutFiles : SendMethod::Files);
 }
 
 enhanced::TransferOptions FileTransferDialog::options() const
@@ -472,7 +515,7 @@ enhanced::TransferOptions FileTransferDialog::options() const
   return {m_identity, pin, ip, static_cast<quint16>(m_controlPort->value()), static_cast<quint16>(m_dataPort->value())};
 }
 
-void FileTransferDialog::start(const QStringList &sources, const QString &destination, bool copyCutFiles)
+void FileTransferDialog::start(const QStringList &sources, const QString &destination, SendMethod method)
 {
   if (m_worker)
     return;
@@ -487,6 +530,8 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
 
   const auto clipboardRevision = m_clipboardRevision;
   const bool autoPublish = m_autoPublish->isChecked();
+  transfer.dropHandoff = destination.isEmpty() ? method == SendMethod::FileDrop : m_allowFileDrop->isChecked();
+  const bool copyCutFiles = method == SendMethod::CutFiles;
   const auto transferStatus =
       copyCutFiles ? tr("Sending cut files as copies…") : tr("Transferring and verifying files…");
   m_cancelled.store(false, std::memory_order_relaxed);
@@ -517,8 +562,9 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
 
     try {
       enhanced::ReceivedFiles received;
+      bool sentFileDrop = false;
       if (destination.isEmpty()) {
-        enhanced::sendFiles(transfer, sources, m_cancelled, progress);
+        sentFileDrop = enhanced::sendFiles(transfer, sources, m_cancelled, progress);
       } else {
         received = enhanced::receiveFiles(transfer, destination, m_cancelled, progress, [this] {
           QMetaObject::invokeMethod(
@@ -529,17 +575,25 @@ void FileTransferDialog::start(const QStringList &sources, const QString &destin
       }
       QMetaObject::invokeMethod(
           this,
-          [this, received = std::move(received), clipboardRevision, autoPublish]() mutable {
+          [this, received = std::move(received), sentFileDrop, clipboardRevision, autoPublish]() mutable {
             m_progress->setRange(0, 100);
             m_progress->setValue(100);
             if (received.directory.isEmpty()) {
-              m_status->setText(tr("The receiver confirmed the transfer."));
+              m_status->setText(
+                  sentFileDrop ? tr("The receiver verified the files for local placement.")
+                               : tr("The receiver confirmed the transfer.")
+              );
             } else {
               showReceived(std::move(received));
-              if (autoPublish && m_clipboardRevision == clipboardRevision)
+              if (m_received.dropHandoff) {
+                m_receivedItems->selectAll();
+                m_status->setText(tr("The file drop is ready. Drag the received files into a local folder."));
+                QApplication::alert(this, 5000);
+              } else if (autoPublish && m_clipboardRevision == clipboardRevision) {
                 copyReceived();
-              else
+              } else {
                 m_status->setText(tr("Verified files are ready in the received folder."));
+              }
             }
           },
           Qt::QueuedConnection
@@ -571,7 +625,9 @@ void FileTransferDialog::showReceived(enhanced::ReceivedFiles received)
   m_received = std::move(received);
   m_receivedItems->clear();
   for (const auto &path : m_received.selection) {
-    auto *item = new QListWidgetItem(QFileInfo(path).fileName(), m_receivedItems);
+    const QFileInfo file(path);
+    const auto icon = style()->standardIcon(file.isDir() ? QStyle::SP_DirIcon : QStyle::SP_FileIcon);
+    auto *item = new QListWidgetItem(icon, file.fileName(), m_receivedItems);
     item->setData(Qt::UserRole, path);
   }
   m_receivedPanel->show();
@@ -623,19 +679,25 @@ void FileTransferDialog::copyReceived()
 
 void FileTransferDialog::refreshActions()
 {
-  const bool available = !m_worker && !m_armed;
+  const bool available = !m_worker && m_armed == ArmedAction::None;
+  const bool waitingForDrop = m_armed == ArmedAction::FileDrop;
   const bool configured = available && !m_identity.fingerprint.isEmpty();
   m_settings->setEnabled(available);
   m_selectionActions->setEnabled(available);
-  m_selection->setEnabled(available);
+  const auto heading = waitingForDrop ? tr("Drop files or folders here to send") : tr("Files and folders to send");
+  m_sourceHeading->setText(heading);
+  m_selection->setAccessibleName(heading);
+  m_selection->setEnabled(available || waitingForDrop);
   m_receivedItems->setEnabled(available);
   m_send->setEnabled(configured && m_selection->count() > 0);
   m_receive->setEnabled(configured);
   m_arm->setEnabled(configured);
+  m_armDrop->setEnabled(configured);
   m_cancel->setEnabled(!available);
   m_copy->setEnabled(available && !m_received.selection.isEmpty());
   m_openFolder->setEnabled(available && !m_received.directory.isEmpty());
   m_autoPublish->setEnabled(available);
+  m_allowFileDrop->setEnabled(available);
 }
 
 } // namespace deskflow::gui

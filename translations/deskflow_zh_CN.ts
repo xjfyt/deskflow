@@ -456,7 +456,7 @@ p, li { white-space: pre-wrap; }
     </message>
     <message>
         <source>Could not save the enhanced identity.</source>
-        <translation>无法保存增强身份。</translation>
+        <translation type="vanished">无法保存增强身份。</translation>
     </message>
     <message>
         <source>The enhanced identity does not contain a certificate.</source>
@@ -525,6 +525,42 @@ p, li { white-space: pre-wrap; }
     <message>
         <source>The enhanced control connection closed.</source>
         <translation>增强控制连接已断开。</translation>
+    </message>
+    <message>
+        <source>Could not read the transfer prefix.</source>
+        <translation>无法读取传输前缀。</translation>
+    </message>
+    <message>
+        <source>The resume checkpoint is unavailable, expired or does not match. Inspect it before clearing it.</source>
+        <translation>续传检查点不可用、已过期或与本次传输不匹配。清理前请先检查。</translation>
+    </message>
+    <message>
+        <source>Another process is using this destination&apos;s resume checkpoint.</source>
+        <translation>有其他进程正在使用该接收目录的续传检查点。</translation>
+    </message>
+    <message>
+        <source>Could not create the resume checkpoint.</source>
+        <translation>无法创建续传检查点。</translation>
+    </message>
+    <message>
+        <source>Both peers must enable single-file resume.</source>
+        <translation>两端都必须启用单文件续传。</translation>
+    </message>
+    <message>
+        <source>The receiver has not enabled local file drop placement.</source>
+        <translation>接收端尚未启用本机文件拖放放置。</translation>
+    </message>
+    <message>
+        <source>The peer offered an invalid resume offset.</source>
+        <translation>对端提供了无效的续传偏移。</translation>
+    </message>
+    <message>
+        <source>The retained transfer prefix differs from the source file.</source>
+        <translation>保留的文件前缀与源文件不一致。</translation>
+    </message>
+    <message>
+        <source>Resume requires one ordinary file.</source>
+        <translation>续传只支持一个普通文件。</translation>
     </message>
 </context>
 <context>
@@ -1920,6 +1956,50 @@ Enabling this setting will disable the server config GUI.</source>
     <message>
         <source>Sending cut files as copies…</source>
         <translation>正在按复制方式发送剪切的文件…</translation>
+    </message>
+    <message>
+        <source>Send next file drop</source>
+        <translation>发送下次文件拖放</translation>
+    </message>
+    <message>
+        <source>Accept file drops for local placement</source>
+        <translation>接受文件拖放并在本机放置</translation>
+    </message>
+    <message>
+        <source>The local drop target accepted the drop.</source>
+        <translation>本机目标已接受拖放。</translation>
+    </message>
+    <message>
+        <source>The local file drop was cancelled or declined. The received files are still available.</source>
+        <translation>本机拖放已取消或被拒绝，收到的文件仍可使用。</translation>
+    </message>
+    <message>
+        <source>File drop expired.</source>
+        <translation>等待文件拖放已超时。</translation>
+    </message>
+    <message>
+        <source>Drop local files or folders to send them.</source>
+        <translation>拖入本机文件或文件夹即可发送。</translation>
+    </message>
+    <message>
+        <source>File drop cancelled.</source>
+        <translation>已取消等待文件拖放。</translation>
+    </message>
+    <message>
+        <source>Drop files or folders into this window within 90 seconds.</source>
+        <translation>请在 90 秒内把文件或文件夹拖入此窗口。</translation>
+    </message>
+    <message>
+        <source>The receiver verified the files for local placement.</source>
+        <translation>接收端已校验文件，可在本机放置。</translation>
+    </message>
+    <message>
+        <source>The file drop is ready. Drag the received files into a local folder.</source>
+        <translation>文件已接收。请将收到的文件拖入本机文件夹。</translation>
+    </message>
+    <message>
+        <source>Drop files or folders here to send</source>
+        <translation>拖入文件或文件夹以发送</translation>
     </message>
 </context>
 <context>
