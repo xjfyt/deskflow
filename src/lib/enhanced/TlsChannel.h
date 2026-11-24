@@ -26,12 +26,19 @@ struct PeerIdentity
 
 PeerIdentity loadIdentity(const QString &path, bool create = false);
 
+class PeerHandshakeError : public Error
+{
+public:
+  using Error::Error;
+};
+
 class TlsChannel
 {
 public:
   TlsChannel(
       QTcpSocket &socket, const PeerIdentity &identity, const QByteArray &pin, const std::atomic_bool &cancelled,
-      bool server, QDeadlineTimer deadline
+      bool server, QDeadlineTimer deadline, QDeadlineTimer lifetime = QDeadlineTimer(QDeadlineTimer::Forever),
+      QTcpSocket *requiredTransport = nullptr
   );
   ~TlsChannel();
 
@@ -48,7 +55,10 @@ private:
 
 void checkCancelled(const std::atomic_bool &cancelled);
 void listen(QTcpServer &server, const QHostAddress &address, quint16 port);
-std::unique_ptr<QTcpSocket> accept(QTcpServer &server, QDeadlineTimer deadline, const std::atomic_bool &cancelled);
+std::unique_ptr<QTcpSocket> accept(
+    QTcpServer &server, QDeadlineTimer deadline, const std::atomic_bool &cancelled,
+    const QTcpSocket *requiredTransport = nullptr
+);
 void connectSocket(
     QTcpSocket &socket, const QHostAddress &address, quint16 port, QDeadlineTimer deadline,
     const std::atomic_bool &cancelled

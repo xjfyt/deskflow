@@ -9,6 +9,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QEventLoop>
 #include <QFile>
 #include <QFileInfo>
 #include <QLockFile>
@@ -17,6 +18,7 @@
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QTemporaryFile>
+#include <QTimer>
 
 #include <openssl/err.h>
 #include <openssl/pem.h>
@@ -29,6 +31,7 @@ namespace deskflow::enhanced {
 namespace {
 
 constexpr int SocketBufferSize = 128 * 1024;
+constexpr int MaxPemSize = 64 * 1024;
 constexpr int MaxWaitSlice = 100;
 constexpr auto PrivateFile = QFileDevice::ReadOwner | QFileDevice::WriteOwner;
 
@@ -40,9 +43,12 @@ QByteArray readPem(const QString &path)
 {
   QFile file(path);
   const QFileInfo info(path);
-  if (!info.isFile() || info.isSymLink() || !file.open(QIODevice::ReadOnly) || file.size() > 64 * 1024)
+  if (!info.isFile() || info.isSymLink() || !file.open(QIODevice::ReadOnly) || file.size() > MaxPemSize)
     throw Error(QCoreApplication::translate("Enhanced", "Could not read the enhanced identity."));
-  return file.readAll();
+  const auto pem = file.read(MaxPemSize + 1);
+  if (file.error() != QFileDevice::NoError || pem.size() > MaxPemSize)
+    throw Error(QCoreApplication::translate("Enhanced", "Could not read the enhanced identity."));
+  return pem;
 }
 
 Cert readCertificate(const QByteArray &pem)
@@ -132,13 +138,41 @@ PeerIdentity loadIdentity(const QString &path, bool create)
 
 struct TlsChannel::State
 {
-  State(QTcpSocket &socket, const std::atomic_bool &cancelled, QByteArray peerPin)
+  State(
+      QTcpSocket &socket, const std::atomic_bool &cancelled, QByteArray peerPin, QDeadlineTimer lifetime,
+      QTcpSocket *requiredTransport
+  )
       : socket(socket),
         cancelled(cancelled),
         peerPin(std::move(peerPin)),
+        lifetime(lifetime),
+        requiredTransport(requiredTransport),
         context(SSL_CTX_new(TLS_method()), SSL_CTX_free),
         ssl(nullptr, SSL_free)
   {
+    timer.setSingleShot(true);
+    QObject::connect(&timer, &QTimer::timeout, &eventLoop, &QEventLoop::quit);
+    QObject::connect(&socket, &QTcpSocket::readyRead, &eventLoop, &QEventLoop::quit);
+    QObject::connect(&socket, &QTcpSocket::bytesWritten, &eventLoop, &QEventLoop::quit);
+    QObject::connect(&socket, &QTcpSocket::disconnected, &eventLoop, &QEventLoop::quit);
+    if (requiredTransport)
+      QObject::connect(requiredTransport, &QTcpSocket::disconnected, &eventLoop, &QEventLoop::quit);
+  }
+
+  void checkRequiredTransport() const
+  {
+    if (requiredTransport && requiredTransport->state() != QAbstractSocket::ConnectedState)
+      throw Error(QCoreApplication::translate("Enhanced", "The enhanced control connection closed."));
+  }
+
+  void waitForSocket(const QDeadlineTimer &deadline)
+  {
+    checkRequiredTransport();
+    if (socket.state() != QAbstractSocket::ConnectedState)
+      throw Error(QCoreApplication::translate("Enhanced", "The enhanced connection closed."));
+    timer.start(waitSlice(deadline, cancelled));
+    eventLoop.exec(QEventLoop::ExcludeUserInputEvents);
+    timer.stop();
   }
 
   void flush(const QDeadlineTimer &deadline)
@@ -151,21 +185,16 @@ struct TlsChannel::State
       if (size <= 0 || socket.write(buffer.data(), size) != size)
         throw Error(QCoreApplication::translate("Enhanced", "Could not write to the enhanced connection."));
     }
-    while (socket.bytesToWrite() > 0) {
-      const auto wait = waitSlice(deadline, cancelled);
-      if (!socket.waitForBytesWritten(wait) && socket.state() != QAbstractSocket::ConnectedState)
-        throw Error(QCoreApplication::translate("Enhanced", "The enhanced connection closed."));
-    }
+    if (socket.bytesToWrite() > 0)
+      socket.flush();
+    while (socket.bytesToWrite() > 0)
+      waitForSocket(deadline);
   }
 
   void supplyInput(const QDeadlineTimer &deadline)
   {
-    while (socket.bytesAvailable() == 0) {
-      const auto wait = waitSlice(deadline, cancelled);
-      if (socket.state() != QAbstractSocket::ConnectedState)
-        throw Error(QCoreApplication::translate("Enhanced", "The enhanced connection closed."));
-      socket.waitForReadyRead(wait);
-    }
+    while (socket.bytesAvailable() == 0)
+      waitForSocket(deadline);
     const auto data = socket.read(16 * 1024);
     if (data.isEmpty() ||
         BIO_write(SSL_get_rbio(ssl.get()), data.constData(), static_cast<int>(data.size())) != data.size())
@@ -175,6 +204,7 @@ struct TlsChannel::State
   template <typename Operation> void perform(Operation operation, const QDeadlineTimer &deadline)
   {
     while (true) {
+      checkRequiredTransport();
       waitSlice(deadline, cancelled);
       ERR_clear_error();
       const auto result = operation();
@@ -184,6 +214,8 @@ struct TlsChannel::State
         return;
       if (error == SSL_ERROR_WANT_READ) {
         supplyInput(deadline);
+      } else if (error == SSL_ERROR_ZERO_RETURN) {
+        throw Error(QCoreApplication::translate("Enhanced", "The enhanced connection closed."));
       } else if (error != SSL_ERROR_WANT_WRITE) {
         throw Error(
             QCoreApplication::translate(
@@ -220,15 +252,19 @@ struct TlsChannel::State
   QTcpSocket &socket;
   const std::atomic_bool &cancelled;
   QByteArray peerPin;
+  QDeadlineTimer lifetime;
+  QTcpSocket *requiredTransport;
+  QEventLoop eventLoop;
+  QTimer timer;
   std::unique_ptr<SSL_CTX, decltype(&SSL_CTX_free)> context;
   std::unique_ptr<SSL, decltype(&SSL_free)> ssl;
 };
 
 TlsChannel::TlsChannel(
     QTcpSocket &socket, const PeerIdentity &identity, const QByteArray &pin, const std::atomic_bool &cancelled,
-    bool server, QDeadlineTimer deadline
+    bool server, QDeadlineTimer deadline, QDeadlineTimer lifetime, QTcpSocket *requiredTransport
 )
-    : m_state(std::make_unique<State>(socket, cancelled, pin))
+    : m_state(std::make_unique<State>(socket, cancelled, pin, lifetime, requiredTransport))
 {
   auto *context = m_state->context.get();
   if (pin.size() != TokenSize || !context || SSL_CTX_set_min_proto_version(context, TLS1_3_VERSION) != 1)
@@ -266,11 +302,17 @@ TlsChannel::TlsChannel(
   else
     SSL_set_connect_state(ssl);
 
-  m_state->perform([&] { return SSL_do_handshake(ssl); }, deadline);
+  try {
+    m_state->perform([&] { return SSL_do_handshake(ssl); }, (std::min)(deadline, lifetime));
+  } catch (const Error &error) {
+    checkCancelled(cancelled);
+    m_state->checkRequiredTransport();
+    throw PeerHandshakeError(error.message);
+  }
   const Cert peer(SSL_get1_peer_certificate(ssl), X509_free);
   if (!peer || SSL_get_verify_result(ssl) != X509_V_OK ||
       sslCertFingerprint(peer.get(), QCryptographicHash::Sha256).data != pin) {
-    throw Error(QCoreApplication::translate("Enhanced", "The enhanced peer fingerprint did not match."));
+    throw PeerHandshakeError(QCoreApplication::translate("Enhanced", "The enhanced peer fingerprint did not match."));
   }
 }
 
@@ -281,11 +323,12 @@ void TlsChannel::send(Message type, QByteArrayView data, QDeadlineTimer deadline
   const auto header = encodeHeader(type, data.size(), ++m_sendSequence);
   auto frame = header;
   frame.append(data.data(), data.size());
-  m_state->write(frame, deadline);
+  m_state->write(frame, (std::min)(deadline, m_state->lifetime));
 }
 
 QByteArray TlsChannel::receive(Message type, qsizetype minimum, qsizetype maximum, QDeadlineTimer deadline)
 {
+  deadline = (std::min)(deadline, m_state->lifetime);
   const auto header = decodeHeader(m_state->read(HeaderSize, deadline), ++m_receiveSequence);
   if (header.type != type || header.size < minimum || header.size > maximum)
     throw Error(QCoreApplication::translate("Enhanced", "Unexpected enhanced protocol message."));
@@ -309,12 +352,26 @@ void listen(QTcpServer &server, const QHostAddress &address, quint16 port)
     );
 }
 
-std::unique_ptr<QTcpSocket> accept(QTcpServer &server, QDeadlineTimer deadline, const std::atomic_bool &cancelled)
+std::unique_ptr<QTcpSocket> accept(
+    QTcpServer &server, QDeadlineTimer deadline, const std::atomic_bool &cancelled, const QTcpSocket *requiredTransport
+)
 {
+  QEventLoop eventLoop;
+  QTimer timer;
+  timer.setSingleShot(true);
+  QObject::connect(&timer, &QTimer::timeout, &eventLoop, &QEventLoop::quit);
+  QObject::connect(&server, &QTcpServer::newConnection, &eventLoop, &QEventLoop::quit);
+  if (requiredTransport)
+    QObject::connect(requiredTransport, &QTcpSocket::disconnected, &eventLoop, &QEventLoop::quit);
+
   while (!server.hasPendingConnections()) {
-    const auto wait = waitSlice(deadline, cancelled);
-    server.waitForNewConnection(wait);
+    if (requiredTransport && requiredTransport->state() != QAbstractSocket::ConnectedState)
+      throw Error(QCoreApplication::translate("Enhanced", "The enhanced control connection closed."));
+    timer.start(waitSlice(deadline, cancelled));
+    eventLoop.exec(QEventLoop::ExcludeUserInputEvents);
+    timer.stop();
   }
+  waitSlice(deadline, cancelled);
   std::unique_ptr<QTcpSocket> socket(server.nextPendingConnection());
   socket->setParent(nullptr);
   configureSocket(*socket);
@@ -328,14 +385,26 @@ void connectSocket(
 {
   socket.setProxy(QNetworkProxy::NoProxy);
   socket.setReadBufferSize(SocketBufferSize);
-  socket.connectToHost(address, port);
-  while (socket.state() != QAbstractSocket::ConnectedState) {
-    const auto wait = waitSlice(deadline, cancelled);
-    socket.waitForConnected(wait);
-    if (socket.state() == QAbstractSocket::UnconnectedState && socket.error() != QAbstractSocket::SocketTimeoutError)
+  QEventLoop eventLoop;
+  QTimer timer;
+  timer.setSingleShot(true);
+  QObject::connect(&timer, &QTimer::timeout, &eventLoop, &QEventLoop::quit);
+  QObject::connect(&socket, &QTcpSocket::connected, &eventLoop, &QEventLoop::quit);
+  QObject::connect(&socket, &QTcpSocket::errorOccurred, &eventLoop, &QEventLoop::quit);
+  try {
+    waitSlice(deadline, cancelled);
+    socket.connectToHost(address, port);
+    while (socket.state() == QAbstractSocket::ConnectingState || socket.state() == QAbstractSocket::HostLookupState) {
+      timer.start(waitSlice(deadline, cancelled));
+      eventLoop.exec(QEventLoop::ExcludeUserInputEvents);
+      timer.stop();
+    }
+    checkCancelled(cancelled);
+    if (socket.state() != QAbstractSocket::ConnectedState)
       throw Error(QCoreApplication::translate("Enhanced", "Could not connect to enhanced port %1.").arg(port));
-    if (socket.state() == QAbstractSocket::UnconnectedState)
-      socket.connectToHost(address, port);
+  } catch (...) {
+    socket.abort();
+    throw;
   }
   configureSocket(socket);
 }
