@@ -20,6 +20,10 @@
 
 从本地便携包运行 `test_input_hub.py`，两个临时 TLS 端点分别取得租约和转发，断开任一侧后关闭剩余连接。此用例在回环地址运行，未触发桌面输入捕获。
 
+图形界面单文件续传交付后，Windows x64 增强版重新编译，`EnhancedProtocolTests`、`EnhancedFileTransferTests` 和 `SecureUtilsTests` 再次通过。文件传输用例验证了非零前缀恢复、篡改拒绝、检查点清除，以及再次清除无检查点时的结果。图形界面双机、重启及磁盘空间不足场景待实机验收。
+
+发布步骤通过 `actionlint`，并在 Bash 使用模拟的 GitHub CLI 返回验证新建、已完整发布、残留草稿、附件缺失、发行类型错误和校验清单重复。正式标签上传和发布待验收。
+
 ## 待补实机记录
 
 使用 [实机验收矩阵](ENHANCED_AUDIT.md#重点回归) 填写系统版本、构建 SHA、屏幕布局、方向与操作结果。重点为 Windows、Xorg 与 macOS 的物理越界和断网释放，Finder/Explorer 的拖放实际落点，三台物理设备上的转发延迟，以及跨设备续传后最终 SHA-256。
