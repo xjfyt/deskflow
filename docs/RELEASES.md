@@ -29,3 +29,5 @@ git push personal refs/tags/enhanced-ci-20261124.1
 ```
 
 在该标签的 **Enhanced packages** 运行详情查看六个架构的输出。修复失败后从修复提交创建下一测试标签。采用新标签可以保留失败运行和对应源码。
+
+各轮打包、回环测试和实机边界见 [验证记录](VALIDATION_REPORT.md)。

@@ -28,7 +28,7 @@ install(
 )
 
 if(BUILD_ENHANCED)
-  install(FILES Enhanced.md ENHANCED_AUDIT.md ENHANCED_ROADMAP.md RELEASES.md UPSTREAM_SYNC.md
+  install(FILES Enhanced.md ENHANCED_AUDIT.md ENHANCED_ROADMAP.md RELEASES.md UPSTREAM_SYNC.md VALIDATION_REPORT.md
     DESTINATION ${CMAKE_INSTALL_DOCDIR})
   install(FILES validation/Get-DeskflowFileManifest.ps1 validation/test_input_hub.py
     DESTINATION ${CMAKE_INSTALL_DOCDIR}/validation)
