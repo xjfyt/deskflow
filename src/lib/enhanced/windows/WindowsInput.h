@@ -7,8 +7,6 @@
 
 namespace deskflow::enhanced {
 
-inline constexpr auto WindowsEnhancedInputLockName = "deskflow-enhanced-input";
-
 int windowsInputCommand(int argc, char **argv);
 
 } // namespace deskflow::enhanced

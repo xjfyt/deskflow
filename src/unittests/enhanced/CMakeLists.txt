@@ -25,6 +25,7 @@ if(ENABLE_ENHANCED_FUZZ)
     EnhancedDecoderFuzz.cpp
     ${enhanced_dir}/FileManifest.cpp
     ${enhanced_dir}/InputLease.cpp
+    ${enhanced_dir}/InputRouter.cpp
     ${enhanced_dir}/Protocol.cpp
   )
   target_link_libraries(EnhancedDecoderFuzz PRIVATE common)

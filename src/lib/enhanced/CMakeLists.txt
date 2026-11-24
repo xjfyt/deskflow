@@ -8,6 +8,10 @@ add_library(enhanced STATIC
   FileTransfer.h
   InputLease.cpp
   InputLease.h
+  InputRouter.cpp
+  InputRouter.h
+  InputSession.cpp
+  InputSession.h
   Protocol.cpp
   Protocol.h
   TlsChannel.cpp
@@ -19,4 +23,8 @@ target_compile_definitions(enhanced INTERFACE DESKFLOW_ENHANCED)
 if(WIN32)
   target_sources(enhanced PRIVATE windows/WindowsInput.cpp windows/WindowsInput.h)
   target_link_libraries(enhanced PRIVATE user32)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND BUILD_X11_SUPPORT AND HAVE_XI2 AND HAVE_Xi AND HAVE_Xtst)
+  target_sources(enhanced PRIVATE x11/X11Input.cpp x11/X11Input.h)
+  target_link_libraries(enhanced PRIVATE X11::X11 X11::Xi X11::Xtst Qt6::DBus)
+  target_compile_definitions(enhanced INTERFACE DESKFLOW_ENHANCED_X11)
 endif()

@@ -5,11 +5,13 @@
 
 #include "InputLease.h"
 
+#include "InputRouter.h"
 #include "Protocol.h"
 
 #include <QtEndian>
 
 #include <algorithm>
+#include <array>
 #include <limits>
 
 namespace deskflow::enhanced {
@@ -116,32 +118,28 @@ InputState InputState::decode(QByteArrayView data)
 
 void advanceLease(InputState &state, const InputPoll &listener, const InputPoll &connector)
 {
-  state.events.clear();
-  const auto releases = [&state](const InputPoll &poll) { return poll.release && poll.epoch == state.epoch; };
-  if (state.owner != InputSide::None) {
-    if (releases(listener) || releases(connector)) {
-      state.owner = InputSide::None;
-      state.active = false;
-      return;
-    }
-    const auto &owner = state.owner == InputSide::Listener ? listener : connector;
-    const auto &target = state.owner == InputSide::Listener ? connector : listener;
-    if (!state.active) {
-      state.active = target.ready && target.epoch == state.epoch;
-    } else if (owner.epoch == state.epoch) {
-      state.events = owner.events;
-    }
-    return;
-  }
-  const bool listenerRequest = listener.request && listener.epoch == state.epoch;
-  const bool connectorRequest = connector.request && connector.epoch == state.epoch;
-  if (listenerRequest == connectorRequest)
-    return;
-  if (state.epoch == std::numeric_limits<quint32>::max())
-    throw Error(QStringLiteral("Enhanced input lease sequence exhausted."));
-  ++state.epoch;
-  state.owner = listenerRequest ? InputSide::Listener : InputSide::Connector;
-  state.verticalPosition = listenerRequest ? listener.verticalPosition : connector.verticalPosition;
+  constexpr InputPeerId listenerId = 1;
+  constexpr InputPeerId connectorId = 2;
+  constexpr std::array routes{InputRoute{listenerId, connectorId}, InputRoute{connectorId, listenerId}};
+  const std::array polls{
+      RoutedInputPoll{listenerId, connectorId, listener}, RoutedInputPoll{connectorId, listenerId, connector}
+  };
+  RoutedInputLease lease{{}, state.epoch, state.verticalPosition, {}, state.active};
+  if (state.owner == InputSide::Listener)
+    lease.route = routes.front();
+  else if (state.owner == InputSide::Connector)
+    lease.route = routes.back();
+
+  advanceInputRoute(lease, routes, polls);
+  state.owner = InputSide::None;
+  if (lease.route.origin == listenerId)
+    state.owner = InputSide::Listener;
+  else if (lease.route.origin == connectorId)
+    state.owner = InputSide::Connector;
+  state.epoch = lease.epoch;
+  state.verticalPosition = lease.verticalPosition;
+  state.events = std::move(lease.events);
+  state.active = lease.active;
 }
 
 void validateLeaseTransition(const InputState &previous, const InputState &next, const InputPoll &sent)

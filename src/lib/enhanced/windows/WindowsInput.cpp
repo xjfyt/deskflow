@@ -5,15 +5,9 @@
 
 #include "WindowsInput.h"
 
-#include "common/Constants.h"
-#include "enhanced/InputLease.h"
-#include "enhanced/TlsChannel.h"
+#include "enhanced/InputSession.h"
 
-#include <QCommandLineParser>
 #include <QCoreApplication>
-#include <QSharedMemory>
-#include <QTcpServer>
-#include <QTcpSocket>
 #include <QTextStream>
 #include <QThread>
 #include <QTimer>
@@ -27,16 +21,13 @@
 #include <cstdlib>
 #include <cwchar>
 #include <memory>
-#include <mutex>
-#include <utility>
 
 namespace deskflow::enhanced {
 namespace {
 
-using Clock = std::chrono::steady_clock;
+using Clock = InputExchange::Clock;
 using namespace std::chrono_literals;
 
-constexpr int Watchdog = 600;
 constexpr ULONG_PTR InjectionTag = 0x44464558;
 constexpr int EdgePadding = 12;
 constexpr int TakeoverDistance = 8;
@@ -51,27 +42,6 @@ BOOL WINAPI interruptConsole(DWORD reason)
   consoleInterrupted.store(true, std::memory_order_relaxed);
   return TRUE;
 }
-
-struct Exchange
-{
-  std::mutex mutex;
-  InputPoll outbound;
-  InputState inbound;
-  Clock::time_point lastUpdate{};
-  std::atomic_bool cancelled = false;
-  QString error;
-};
-
-struct InputOptions
-{
-  PeerIdentity identity;
-  QByteArray pin;
-  QHostAddress address;
-  quint16 port;
-  bool listener;
-  bool rightEdge;
-  HANDLE guiPipe;
-};
 
 void reportState(HANDLE guiPipe, const char *state, const char *message)
 {
@@ -94,96 +64,6 @@ bool guiStopRequested(HANDLE pipe)
   char command = 0;
   DWORD read = 0;
   return !ReadFile(pipe, &command, 1, &read, nullptr) || read == 0 || command == 'Q';
-}
-
-InputPoll takePoll(Exchange &exchange)
-{
-  std::lock_guard lock(exchange.mutex);
-  return std::exchange(exchange.outbound, {});
-}
-
-void publish(Exchange &exchange, const InputState &state, InputSide localSide)
-{
-  std::lock_guard lock(exchange.mutex);
-  if (exchange.inbound.epoch != state.epoch || exchange.inbound.owner != state.owner ||
-      exchange.inbound.active != state.active) {
-    exchange.inbound = {state.owner, state.epoch, state.verticalPosition, {}, state.active};
-  }
-  if (state.owner != localSide) {
-    for (const auto &event : state.events) {
-      if (!queueInputEvent(exchange.inbound.events, event))
-        throw Error(QStringLiteral("Enhanced input playback queue overflow."));
-    }
-  }
-  exchange.lastUpdate = Clock::now();
-}
-
-void runNetwork(Exchange &exchange, const InputOptions &options)
-{
-  QTcpSocket outgoing;
-  std::unique_ptr<QTcpSocket> incoming;
-  std::unique_ptr<TlsChannel> authenticated;
-  if (options.listener) {
-    QTcpServer server;
-    listen(server, options.address, options.port);
-    const QDeadlineTimer deadline(120000);
-    while (!authenticated) {
-      incoming = accept(server, deadline, exchange.cancelled);
-      try {
-        authenticated = std::make_unique<TlsChannel>(
-            *incoming, options.identity, options.pin, exchange.cancelled, true,
-            (std::min)(deadline, QDeadlineTimer(5000))
-        );
-      } catch (const PeerHandshakeError &) {
-        incoming.reset();
-      }
-    }
-  } else {
-    connectSocket(outgoing, options.address, options.port, QDeadlineTimer(5000), exchange.cancelled);
-    authenticated = std::make_unique<TlsChannel>(
-        outgoing, options.identity, options.pin, exchange.cancelled, false, QDeadlineTimer(5000)
-    );
-  }
-
-  auto &channel = *authenticated;
-  const QByteArray capability("\x02\x02", 2); // Input control, two-phase lease.
-  channel.send(Message::Hello, capability, QDeadlineTimer(5000));
-  if (channel.receive(Message::Hello, capability.size(), capability.size(), QDeadlineTimer(5000)) != capability)
-    throw Error(QStringLiteral("The verified peer does not support this enhanced input session."));
-
-  InputState lease;
-  Clock::time_point pendingUntil{};
-  while (!exchange.cancelled.load(std::memory_order_relaxed)) {
-    const QDeadlineTimer deadline(Watchdog);
-    if (options.listener) {
-      const auto peer =
-          InputPoll::decode(channel.receive(Message::InputPoll, InputHeaderSize, MaxInputPacket, deadline));
-      const auto local = takePoll(exchange);
-      const auto now = Clock::now();
-      const auto previousEpoch = lease.epoch;
-      if (lease.owner != InputSide::None && !lease.active && now >= pendingUntil) {
-        lease.owner = InputSide::None;
-        lease.events.clear();
-      } else {
-        advanceLease(lease, local, peer);
-      }
-      if (lease.epoch != previousEpoch)
-        pendingUntil = now + std::chrono::milliseconds(Watchdog);
-      publish(exchange, lease, InputSide::Listener);
-      if (lease.owner == InputSide::Connector)
-        lease.events.clear();
-      channel.send(Message::InputState, lease.encode(), deadline);
-    } else {
-      const auto sent = takePoll(exchange);
-      channel.send(Message::InputPoll, sent.encode(), deadline);
-      const auto state =
-          InputState::decode(channel.receive(Message::InputState, InputHeaderSize, MaxInputPacket, deadline));
-      validateLeaseTransition(lease, state, sent);
-      publish(exchange, state, InputSide::Connector);
-      lease = {state.owner, state.epoch, state.verticalPosition, {}, state.active};
-      QThread::msleep(8);
-    }
-  }
 }
 
 struct Desktop
@@ -345,11 +225,11 @@ InputEvent mouseButton(WPARAM message, DWORD data)
 class WindowsInput
 {
 public:
-  WindowsInput(Exchange &exchange, const InputOptions &options)
+  WindowsInput(InputExchange &exchange, const InputSessionOptions &options, HANDLE guiPipe)
       : m_exchange(exchange),
         m_side(options.listener ? InputSide::Listener : InputSide::Connector),
         m_rightEdge(options.rightEdge),
-        m_guiPipe(options.guiPipe)
+        m_guiPipe(guiPipe)
   {
     s_current = this;
     for (size_t key = VK_BACK; key < m_physicalKeys.size(); ++key) {
@@ -385,18 +265,11 @@ public:
 
   void tick()
   {
-    InputState state;
-    Clock::time_point lastUpdate;
-    {
-      std::lock_guard lock(m_exchange.mutex);
-      state = m_exchange.inbound;
-      m_exchange.inbound.events.clear();
-      lastUpdate = m_exchange.lastUpdate;
-    }
+    const auto [state, lastUpdate] = m_exchange.takeInbound();
     const auto now = Clock::now();
     if (guiStopRequested(m_guiPipe) || consoleInterrupted.load(std::memory_order_relaxed) ||
         m_exchange.cancelled.load(std::memory_order_relaxed) ||
-        (m_connected && now - lastUpdate > std::chrono::milliseconds(Watchdog))) {
+        (m_connected && now - lastUpdate > std::chrono::milliseconds(InputWatchdog))) {
       m_blocked = true;
       m_exchange.cancelled.store(true, std::memory_order_relaxed);
       stopLease();
@@ -446,8 +319,7 @@ public:
         if (bounds.width < 2 * EdgePadding || bounds.height < 2 || !interactiveDesktop()) {
           release();
         } else {
-          std::lock_guard lock(m_exchange.mutex);
-          m_exchange.outbound = {m_epoch, 0, false, false, {}, true};
+          m_exchange.ready(m_epoch);
           m_readied = true;
         }
       }
@@ -564,19 +436,13 @@ private:
   {
     m_blocked = true;
     stopLease();
-    std::lock_guard lock(m_exchange.mutex);
-    m_exchange.outbound = {m_epoch, 0, false, true, {}};
+    m_exchange.release(m_epoch);
   }
 
   void enqueue(InputEvent event)
   {
-    std::lock_guard lock(m_exchange.mutex);
-    auto &poll = m_exchange.outbound;
-    poll.epoch = m_epoch;
-    if (!queueInputEvent(poll.events, event)) {
-      m_exchange.cancelled.store(true, std::memory_order_relaxed);
+    if (!m_exchange.enqueue(m_epoch, event))
       m_blocked = true;
-    }
   }
 
   bool apply(const InputEvent &event)
@@ -694,10 +560,9 @@ private:
       if (bounds.width > 1 && bounds.height > 1 && event.pt.x == edge(bounds) && now >= m_nextRequest &&
           GetCursorPos(&previous) && (m_rightEdge ? previous.x < event.pt.x : previous.x > event.pt.x)) {
         const auto y = std::clamp(event.pt.y - bounds.top, 0L, bounds.height - 1);
-        std::lock_guard lock(m_exchange.mutex);
-        m_exchange.outbound = {m_epoch, static_cast<quint16>(MulDiv(y, 65535, bounds.height - 1)), true, false, {}};
+        m_exchange.request(m_epoch, static_cast<quint16>(MulDiv(y, 65535, bounds.height - 1)));
         m_nextRequest = now + 250ms;
-        m_requestUntil = now + std::chrono::milliseconds(Watchdog);
+        m_requestUntil = now + std::chrono::milliseconds(InputWatchdog);
       }
     }
     return swallowed;
@@ -719,7 +584,7 @@ private:
 
   static inline WindowsInput *s_current = nullptr;
 
-  Exchange &m_exchange;
+  InputExchange &m_exchange;
   const InputSide m_side;
   const bool m_rightEdge;
   const HANDLE m_guiPipe;
@@ -754,92 +619,33 @@ int windowsInputCommand(int argc, char **argv)
 {
   SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
   const QCoreApplication app(argc, argv);
-  QCommandLineParser parser;
-  parser.setApplicationDescription(QStringLiteral(
-      "Experimental bidirectional Windows control. Stop the classic core before starting.\n"
-      "Emergency exit: Ctrl+Alt+Shift+F12.\n"
-      "Usage: deskflow-core --enhanced-control <listen|connect> [options]"
-  ));
-  parser.addHelpOption();
-  parser.addPositionalArgument(QStringLiteral("mode"), QStringLiteral("listen or connect"));
-  const QCommandLineOption certificate(
-      QStringLiteral("certificate"), QStringLiteral("Local enhanced PEM identity file."), QStringLiteral("path")
-  );
-  const QCommandLineOption peer(
-      QStringLiteral("peer"), QStringLiteral("Verified SHA-256 fingerprint of the other computer."),
-      QStringLiteral("fingerprint")
-  );
-  const QCommandLineOption address(
-      QStringLiteral("address"), QStringLiteral("Explicit local bind IP or remote listener IP."), QStringLiteral("IP")
-  );
-  const QCommandLineOption edge(
-      QStringLiteral("edge"), QStringLiteral("Local screen edge facing the other computer."),
-      QStringLiteral("left|right")
-  );
-  const QCommandLineOption port(
-      QStringLiteral("port"), QStringLiteral("Enhanced input port."), QStringLiteral("port"), QStringLiteral("24803")
-  );
-  const QCommandLineOption guiSession(
-      QStringLiteral("gui-session"), QStringLiteral("Run with a GUI-owned stdin control pipe.")
-  );
-  parser.addOptions({certificate, peer, address, edge, port, guiSession});
-  auto arguments = QCoreApplication::arguments();
-  arguments.removeAt(1);
-  parser.process(arguments);
-
   try {
-    const auto mode = parser.positionalArguments().value(0);
-    const auto localEdge = parser.value(edge);
-    const auto bindPort = parser.value(port).toUShort();
-    const QHostAddress ip(parser.value(address));
-    const auto pin = parseFingerprint(parser.value(peer));
-    if (parser.positionalArguments().size() != 1 ||
-        (mode != QStringLiteral("listen") && mode != QStringLiteral("connect")) ||
-        (localEdge != QStringLiteral("right") && localEdge != QStringLiteral("left")) || bindPort == 0 || ip.isNull() ||
-        pin.isEmpty() || parser.value(certificate).isEmpty()) {
-      throw Error(
-          QStringLiteral("Specify listen or connect, a certificate, peer fingerprint, IP address and screen edge.")
-      );
-    }
-    const auto identity = loadIdentity(parser.value(certificate));
-    if (identity.fingerprint == pin)
-      throw Error(QStringLiteral("Enter the fingerprint of the other computer."));
+    const auto options = parseInputOptions(
+        QCoreApplication::arguments(),
+        QStringLiteral(
+            "Experimental bidirectional Windows control. Stop the classic core before starting.\n"
+            "Emergency exit: Ctrl+Alt+Shift+F12.\n"
+            "Usage: deskflow-core --enhanced-control <listen|connect> [options]"
+        ),
+        true
+    );
     if (!unelevatedProcess())
       throw Error(QStringLiteral("Start experimental Windows control from a standard, non-elevated desktop session."));
     HANDLE guiPipe = nullptr;
-    if (parser.isSet(guiSession)) {
+    if (options.guiSession) {
       guiPipe = GetStdHandle(STD_INPUT_HANDLE);
       if (!guiPipe || guiPipe == INVALID_HANDLE_VALUE || GetFileType(guiPipe) != FILE_TYPE_PIPE)
         throw Error(QStringLiteral("A GUI input session requires a redirected stdin pipe."));
     }
-    const InputOptions options{
-        identity, pin, ip, bindPort, mode == QStringLiteral("listen"), localEdge == QStringLiteral("right"), guiPipe
-    };
-
-    QSharedMemory enhancedLock(WindowsEnhancedInputLockName);
-    if (!enhancedLock.create(1))
-      throw Error(QStringLiteral("An enhanced input session is already running in this Windows session."));
-
-    QSharedMemory classicLock(kCoreBinName);
-    if (classicLock.attach())
-      classicLock.detach();
-    if (!classicLock.create(1))
-      throw Error(QStringLiteral("Stop the running Deskflow core before starting enhanced control."));
-
-    Exchange exchange;
-    WindowsInput input(exchange, options);
+    const InputSessionGuard sessionGuard;
+    InputExchange exchange;
+    WindowsInput input(exchange, options, guiPipe);
     if (!input.start())
       throw Error(QStringLiteral("Could not start Windows input hooks on the interactive desktop."));
 
     SetConsoleCtrlHandler(interruptConsole, TRUE);
     std::unique_ptr<QThread> network(QThread::create([&] {
-      try {
-        runNetwork(exchange, options);
-      } catch (const std::exception &error) {
-        if (!exchange.cancelled.load(std::memory_order_relaxed))
-          exchange.error = QString::fromUtf8(error.what());
-        exchange.cancelled.store(true, std::memory_order_relaxed);
-      }
+      runInputNetwork(exchange, options, QByteArrayView("\x02\x02", 2));
     }));
     QTimer timer;
     timer.setTimerType(Qt::PreciseTimer);

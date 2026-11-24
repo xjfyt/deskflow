@@ -5,9 +5,12 @@
 
 #include "enhanced/FileManifest.h"
 #include "enhanced/InputLease.h"
+#include "enhanced/InputRouter.h"
 #include "enhanced/Protocol.h"
 
 #include <QtTest>
+
+#include <array>
 
 using namespace deskflow::enhanced;
 
@@ -119,6 +122,57 @@ private Q_SLOTS:
     const InputState packet{InputSide::Listener, 1, 250, {{InputKind::Key, 29, 1}}, true};
     validateLeaseTransition(active, InputState::decode(packet.encode()), {});
     QVERIFY_EXCEPTION_THROWN(validateLeaseTransition(offer, packet, {}), Error);
+  }
+
+  void threeDeviceRoutesOnlyAcceptAuthorizedParticipants()
+  {
+    constexpr InputPeerId a = 1, b = 2, c = 3;
+    const std::array routes{InputRoute{a, b}, InputRoute{b, a}, InputRoute{b, c}, InputRoute{c, b}};
+    RoutedInputLease lease;
+    advanceInputRoute(lease, routes, std::array{RoutedInputPoll{a, c, {0, 0, true, false, {}}}});
+    QVERIFY(!lease.route.valid());
+
+    advanceInputRoute(lease, routes, std::array{RoutedInputPoll{a, b, {0, 100, true, false, {}}}});
+    QCOMPARE(lease.route.origin, a);
+    QCOMPARE(lease.route.target, b);
+    QCOMPARE(lease.epoch, 1);
+    QVERIFY(!lease.active);
+
+    advanceInputRoute(lease, routes, std::array{RoutedInputPoll{c, 0, {1, 0, false, false, {}, true}}});
+    QVERIFY(!lease.active);
+    advanceInputRoute(lease, routes, std::array{RoutedInputPoll{b, 0, {1, 0, false, false, {}, true}}});
+    QVERIFY(lease.active);
+
+    const InputPoll movement{1, 0, false, false, {{InputKind::Move, 3, 5}}};
+    const InputPoll release{1, 0, false, true, {}};
+    const std::array samples{RoutedInputPoll{c, b, release}, RoutedInputPoll{a, b, movement}};
+    advanceInputRoute(lease, routes, samples);
+    QCOMPARE(lease.events.size(), 1);
+    QVERIFY(lease.active);
+
+    advanceInputRoute(lease, routes, std::array{RoutedInputPoll{b, 0, release}});
+    QVERIFY(!lease.route.valid());
+    QVERIFY(!lease.active);
+    advanceInputRoute(lease, routes, std::array{RoutedInputPoll{b, c, {1, 300, true, false, {}}}});
+    QCOMPARE(lease.route.origin, b);
+    QCOMPARE(lease.route.target, c);
+    QCOMPARE(lease.epoch, 2);
+
+    const std::array withoutC{InputRoute{a, b}, InputRoute{b, a}};
+    advanceInputRoute(lease, withoutC, {});
+    QVERIFY(!lease.route.valid());
+    QVERIFY(lease.events.isEmpty());
+  }
+
+  void simultaneousRequestsAcrossThreeDevicesDoNotAcquireTheLease()
+  {
+    const std::array routes{InputRoute{1, 2}, InputRoute{2, 3}};
+    const InputPoll request{0, 100, true, false, {}};
+    const std::array polls{RoutedInputPoll{1, 2, request}, RoutedInputPoll{2, 3, request}};
+    RoutedInputLease lease;
+    advanceInputRoute(lease, routes, polls);
+    QVERIFY(!lease.route.valid());
+    QCOMPARE(lease.epoch, 0);
   }
 
   void movementCoalescesWithoutReorderingPressedInputs()

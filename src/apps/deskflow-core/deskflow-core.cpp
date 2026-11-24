@@ -11,8 +11,14 @@
 #ifdef DESKFLOW_ENHANCED
 #include "EnhancedFileCommand.h"
 #endif
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+#include "enhanced/InputSession.h"
+#endif
 #ifdef Q_OS_WIN
 #include "enhanced/windows/WindowsInput.h"
+#endif
+#ifdef DESKFLOW_ENHANCED_X11
+#include "enhanced/x11/X11Input.h"
 #endif
 
 #include "arch/Arch.h"
@@ -84,6 +90,9 @@ int main(int argc, char **argv)
 #ifdef Q_OS_WIN
   if (argc > 1 && std::strcmp(argv[1], "--enhanced-control") == 0)
     return deskflow::enhanced::windowsInputCommand(argc, argv);
+#elif defined(DESKFLOW_ENHANCED_X11)
+  if (argc > 1 && std::strcmp(argv[1], "--enhanced-control") == 0)
+    return deskflow::enhanced::x11InputCommand(argc, argv);
 #endif
 #endif
 
@@ -132,13 +141,13 @@ int main(int argc, char **argv)
       LOG_WARN("an instance of deskflow core is already running");
       return s_exitDuplicate;
     }
-#ifdef Q_OS_WIN
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
     // Keep a classic attachment for the full lifetime, including explicit additional instances.
     if (!sharedMemory.attach() && !sharedMemory.create(1) && !sharedMemory.attach()) {
       LOG_WARN("could not register an additional classic core");
       return s_exitDuplicate;
     }
-    QSharedMemory enhancedLock(deskflow::enhanced::WindowsEnhancedInputLockName);
+    QSharedMemory enhancedLock(deskflow::enhanced::EnhancedInputLockName);
     if (enhancedLock.attach(QSharedMemory::ReadOnly) || enhancedLock.error() == QSharedMemory::PermissionDenied) {
       LOG_WARN("enhanced input is already using this desktop");
       return s_exitDuplicate;
