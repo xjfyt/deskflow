@@ -12,7 +12,7 @@
 | macOS | Intel、Apple Silicon | DMG 已生成，镜像校验通过，macOS 输入后端完成 Apple SDK 编译 |
 | Debian 13 | amd64、arm64 | DEB 已生成，架构和安装位置检查通过，X11 输入后端完成构建 |
 
-测试标签 `enhanced-ci-20261124.5` 对应提交 `0ffa7a3bd`。本次工作流增加了合成三机中继验证，在 macOS 从只读挂载的 DMG 启动，在 Windows 从解压后的 ZIP 启动。 [终版复验运行](https://github.com/xjfyt/deskflow/actions/runs/45308174709)
+测试标签 `enhanced-ci-20261124.5` 对应提交 `0ffa7a3bd`。六个架构全部通过打包、三个 CTest 套件和合成三机中继测试，并上传六组产物。macOS 从只读挂载的 DMG 启动中继，Windows 从解压后的 ZIP 启动中继。测试标签的正式发布任务已跳过。 [终版复验运行](https://github.com/xjfyt/deskflow/actions/runs/45308174709)
 
 ## Windows 本地验证
 
