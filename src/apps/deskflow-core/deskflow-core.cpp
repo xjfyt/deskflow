@@ -11,7 +11,7 @@
 #ifdef DESKFLOW_ENHANCED
 #include "EnhancedFileCommand.h"
 #endif
-#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
 #include "enhanced/InputSession.h"
 #endif
 #ifdef Q_OS_WIN
@@ -19,6 +19,9 @@
 #endif
 #ifdef DESKFLOW_ENHANCED_X11
 #include "enhanced/x11/X11Input.h"
+#endif
+#ifdef DESKFLOW_ENHANCED_MACOS
+#include "enhanced/macos/MacInput.h"
 #endif
 
 #include "arch/Arch.h"
@@ -93,6 +96,9 @@ int main(int argc, char **argv)
 #elif defined(DESKFLOW_ENHANCED_X11)
   if (argc > 1 && std::strcmp(argv[1], "--enhanced-control") == 0)
     return deskflow::enhanced::x11InputCommand(argc, argv);
+#elif defined(DESKFLOW_ENHANCED_MACOS)
+  if (argc > 1 && std::strcmp(argv[1], "--enhanced-control") == 0)
+    return deskflow::enhanced::macInputCommand(argc, argv);
 #endif
 #endif
 
@@ -141,7 +147,7 @@ int main(int argc, char **argv)
       LOG_WARN("an instance of deskflow core is already running");
       return s_exitDuplicate;
     }
-#if defined(Q_OS_WIN) || defined(Q_OS_LINUX)
+#if defined(Q_OS_WIN) || defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
     // Keep a classic attachment for the full lifetime, including explicit additional instances.
     if (!sharedMemory.attach() && !sharedMemory.create(1) && !sharedMemory.attach()) {
       LOG_WARN("could not register an additional classic core");
