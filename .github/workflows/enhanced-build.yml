@@ -94,7 +94,7 @@ jobs:
         shell: bash
         run: |
           apt-get update -qq
-          apt-get install -y -qq ca-certificates git dpkg-dev
+          apt-get install -y -qq ca-certificates git dpkg-dev file
 
       - uses: actions/checkout@v6
         with:
@@ -108,7 +108,6 @@ jobs:
           arch: ${{ matrix.target.arch }}
 
       - name: Install Deskflow dependencies
-        id: dependencies
         uses: ./.github/actions/install-dependencies
         with:
           qt-version: ${{ matrix.target.qt }}
@@ -119,17 +118,21 @@ jobs:
         shell: bash
         env:
           PACKAGE_LABEL: ${{ needs.version.outputs.label }}
+          VCPKG_TRIPLET: ${{ matrix.target.triplet }}
         run: |
           extra=()
           if [[ "$RUNNER_OS" == Linux ]]; then
             extra+=(-DCMAKE_INSTALL_PREFIX=/usr)
           elif [[ "$RUNNER_OS" == macOS ]]; then
             extra+=(-DBUILD_OSX_BUNDLE=ON "-DOPENSSL_ROOT_DIR=$(brew --prefix openssl@3)")
+          elif [[ "$RUNNER_OS" == Windows ]]; then
+            toolchain="$(cygpath -m "$PWD/vcpkg/scripts/buildsystems/vcpkg.cmake")"
+            extra+=("-DCMAKE_TOOLCHAIN_FILE=$toolchain" "-DVCPKG_TARGET_TRIPLET=$VCPKG_TRIPLET"
+                    -DVCPKG_MANIFEST_MODE=OFF)
           fi
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_ENHANCED=ON -DBUILD_TESTS=ON -DSKIP_BUILD_TESTS=ON \
-            -DBUILD_INSTALLER=ON "-DPACKAGE_VERSION_LABEL=$PACKAGE_LABEL" "${extra[@]}" \
-            ${{ steps.dependencies.outputs.vcpkg-cmake-config }}
+            -DBUILD_INSTALLER=ON "-DPACKAGE_VERSION_LABEL=$PACKAGE_LABEL" "${extra[@]}"
           cmake --build build --parallel 4
 
       - name: Package and inspect installers
@@ -180,6 +183,20 @@ jobs:
             cmake -E sha256sum * > "../SHA256SUMS"
           )
           cp SHA256SUMS "release/SHA256SUMS-${RUNNER_OS}-${RUNNER_ARCH}"
+
+      - name: Run enhanced protocol and transfer tests
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            zip=(release/*.zip)
+            mkdir -p test-runtime
+            (cd test-runtime && cmake -E tar xf "../${zip[0]}")
+            core="$(find test-runtime -name deskflow-core.exe -print -quit)"
+            [[ -n "$core" ]]
+            export PATH="$PWD/$(dirname "$core"):$PATH"
+          fi
+          ctest --test-dir build/src/unittests --timeout 90 --output-on-failure \
+            -R '^(Enhanced.*|SecureUtilsTests)$'
 
       - name: Upload packages and checksums
         uses: actions/upload-artifact@v4
