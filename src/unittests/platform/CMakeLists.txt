@@ -5,7 +5,7 @@ if (WIN32)
   create_test(
     NAME MSWindowsClipboardTests
     DEPENDS platform
-    LIBS base arch
+    LIBS app base arch
     SOURCE MSWindowsClipboardTests.cpp
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
   )

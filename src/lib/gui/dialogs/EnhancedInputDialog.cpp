@@ -108,7 +108,10 @@ EnhancedInputDialog::EnhancedInputDialog(QWidget *parent) : QDialog(parent)
     if (!m_output.isEmpty())
       setChildState(m_output.trimmed());
     if (status == QProcess::NormalExit && code == 0) {
-      m_status->setText(tr("Enhanced input stopped."));
+      m_status->setText(
+          m_desktopInterrupted ? tr("Windows switched desktops. Start enhanced input again when ready.")
+                               : tr("Enhanced input stopped.")
+      );
     } else if (!m_lastDiagnostic.isEmpty()) {
       m_status->setText(tr("Enhanced input ended. %1").arg(m_lastDiagnostic));
     } else {
@@ -175,6 +178,7 @@ void EnhancedInputDialog::start()
   }
 
   m_stopping = false;
+  m_desktopInterrupted = false;
   m_closeAfterStop = false;
   m_output.clear();
   m_lastDiagnostic.clear();
@@ -243,10 +247,13 @@ void EnhancedInputDialog::setChildState(const QByteArray &line)
       m_lastDiagnostic = QString::fromUtf8(line.first(512));
     return;
   }
-  if (m_stopping)
-    return;
   const auto state = line.sliced(11);
-  if (state == "waiting")
+  if (state == "desktop") {
+    m_desktopInterrupted = true;
+    m_status->setText(tr("Windows switched desktops. Complete the prompt using the local mouse or keyboard."));
+  } else if (m_stopping) {
+    return;
+  } else if (state == "waiting")
     m_status->setText(tr("Waiting for a verified peer."));
   else if (state == "paired" || state == "local")
     m_status->setText(tr("Paired. Input is local. Move through the selected edge to start."));

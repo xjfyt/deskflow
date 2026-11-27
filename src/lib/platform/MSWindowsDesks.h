@@ -212,9 +212,10 @@ private:
 
   // desk switch checking and handling
   Desk *addDesk(const std::wstring &name, HDESK hdesk);
+  void removeDesk(Desk *desk);
   void removeDesks();
   void checkDesk();
-  bool isDeskAccessible(const Desk *desk) const;
+  void pauseDesk();
   void handleCheckDesk();
 
   // communication with desk threads

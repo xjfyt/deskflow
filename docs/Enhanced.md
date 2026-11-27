@@ -76,6 +76,8 @@ pwsh -File docs/validation/Get-DeskflowFileManifest.ps1 -Root 'C:/收件/Deskflo
 
 返回相邻边缘可还回控制。目标侧的本机键盘、鼠标按键和滚轮可立即抢回。鼠标移动累计约 8 像素时也可抢回。应额外检查按住修饰键时断网、锁屏、重连前恢复本地控制，以及高 DPI 或非矩形显示器布局。
 
+Windows 切换到 UAC 等受保护桌面时，增强输入结束远程会话并撤销捕获。若还有 Windows 未接收的按键或按钮释放，程序会在恢复到原交互桌面后重试。用本机设备完成提示，再重新启动增强输入。经典模式的普通进程和系统服务有独立的实机步骤。 [Windows UAC 与本机粘贴验收](ENHANCED_AUDIT.md#windows-uac-与本机文件粘贴)
+
 ## Linux X11 双向键鼠预览
 
 两台 Linux 电脑均需在普通用户的本机 Xorg 会话运行，使用相同版本、相对指针和兼容的键盘布局。需要 XI2.2、XTEST，以及 logind 提供的当前本机解锁会话。经典 core 退出后使用与 Windows 示例相同的 `--enhanced-control listen|connect` 参数，替换为 Linux 的程序和身份文件路径。在两个终端观察会话状态，按 Ctrl+C 结束。双机注入使用 X11 原生键码，Windows 和 macOS 使用各自的协议族。

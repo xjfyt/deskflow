@@ -21,6 +21,7 @@
 #include <cstdlib>
 #include <cwchar>
 #include <memory>
+#include <utility>
 
 namespace deskflow::enhanced {
 namespace {
@@ -246,10 +247,7 @@ public:
     stopLease();
     if (!m_injected.isEmpty())
       QTextStream(stderr) << "Windows did not accept all injected input releases on this desktop." << Qt::endl;
-    if (m_mouse)
-      UnhookWindowsHookEx(m_mouse);
-    if (m_keyboard)
-      UnhookWindowsHookEx(m_keyboard);
+    removeHooks();
     s_current = nullptr;
   }
 
@@ -265,11 +263,24 @@ public:
 
   void tick()
   {
-    const auto [state, lastUpdate] = m_exchange.takeInbound();
     const auto now = Clock::now();
+    if (now - m_desktopChecked > 200ms) {
+      m_desktopChecked = now;
+      const bool interactive = interactiveDesktop();
+      if (m_desktopInterrupted || !interactive)
+        recoverDesktop(interactive, now);
+    }
+    if (m_desktopInterrupted)
+      return;
+
+    const auto [state, lastUpdate] = m_exchange.takeInbound();
     if (guiStopRequested(m_guiPipe) || consoleInterrupted.load(std::memory_order_relaxed) ||
         m_exchange.cancelled.load(std::memory_order_relaxed) ||
         (m_connected && now - lastUpdate > std::chrono::milliseconds(InputWatchdog))) {
+      if (!m_injected.isEmpty() && !interactiveDesktop()) {
+        recoverDesktop(false, now);
+        return;
+      }
       m_blocked = true;
       m_exchange.cancelled.store(true, std::memory_order_relaxed);
       stopLease();
@@ -282,18 +293,6 @@ public:
     if (!m_connected) {
       m_connected = true;
       reportState(m_guiPipe, "paired", "Enhanced input paired. Move across the selected edge to control the peer.");
-    }
-
-    if (now - m_desktopChecked > 200ms) {
-      m_desktopChecked = now;
-      if (!interactiveDesktop()) {
-        m_blocked = true;
-        m_exchange.cancelled.store(true, std::memory_order_relaxed);
-        stopLease();
-        reportState(m_guiPipe, "local", "Local input restored.");
-        QCoreApplication::quit();
-        return;
-      }
     }
 
     if (state.epoch != m_epoch || state.owner != m_owner) {
@@ -339,6 +338,36 @@ public:
   }
 
 private:
+  void removeHooks()
+  {
+    if (m_mouse)
+      UnhookWindowsHookEx(std::exchange(m_mouse, nullptr));
+    if (m_keyboard)
+      UnhookWindowsHookEx(std::exchange(m_keyboard, nullptr));
+  }
+
+  void recoverDesktop(bool interactive, Clock::time_point now)
+  {
+    if (!m_desktopInterrupted) {
+      m_desktopInterrupted = true;
+      m_blocked = true;
+      m_captured = false;
+      m_exchange.cancelled.store(true, std::memory_order_relaxed);
+      removeHooks();
+      reportState(m_guiPipe, "desktop", "Windows switched desktops. Remote control was stopped.");
+    }
+    if (interactive && !m_injected.isEmpty()) {
+      if (m_desktopReleaseUntil == Clock::time_point{})
+        m_desktopReleaseUntil = now + 2s;
+      stopLease();
+    } else if (!interactive) {
+      m_desktopReleaseUntil = {};
+    }
+    if (m_injected.isEmpty() || (m_desktopReleaseUntil != Clock::time_point{} && now >= m_desktopReleaseUntil)) {
+      QCoreApplication::exit(m_injected.isEmpty() ? 0 : 1);
+    }
+  }
+
   static LRESULT CALLBACK keyHook(int code, WPARAM message, LPARAM value)
   {
     if (code == HC_ACTION && s_current->keyEvent(message, *reinterpret_cast<const KBDLLHOOKSTRUCT *>(value)))
@@ -609,6 +638,8 @@ private:
   Clock::time_point m_nextRequest{};
   Clock::time_point m_requestUntil{};
   Clock::time_point m_desktopChecked{};
+  Clock::time_point m_desktopReleaseUntil{};
+  bool m_desktopInterrupted = false;
   Clock::time_point m_takeoverUntil{};
   LONG m_takeoverDistance = 0;
 };
@@ -653,10 +684,12 @@ int windowsInputCommand(int argc, char **argv)
     timer.start(8);
     reportState(guiPipe, "waiting", "Waiting for a verified enhanced input peer.");
     network->start();
-    QCoreApplication::exec();
+    const auto result = QCoreApplication::exec();
     exchange.cancelled.store(true, std::memory_order_relaxed);
     network->wait();
     SetConsoleCtrlHandler(interruptConsole, FALSE);
+    if (result != 0)
+      throw Error(QStringLiteral("Windows did not accept all injected input releases after returning to the desktop."));
     if (!exchange.error.isEmpty())
       throw Error(exchange.error);
     return 0;

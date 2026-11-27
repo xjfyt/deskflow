@@ -63,6 +63,7 @@ private:
   QPushButton *m_stop = nullptr;
   bool m_classicStopped = false;
   bool m_stopping = false;
+  bool m_desktopInterrupted = false;
   bool m_closeAfterStop = false;
 };
 

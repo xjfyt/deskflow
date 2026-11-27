@@ -387,7 +387,9 @@ void Client::sendClipboard(ClipboardID id)
   if (clipboard.open(m_timeClipboard[id])) {
     clipboard.close();
   }
-  m_computer->getClipboard(id, &clipboard);
+  if (!m_computer->getClipboard(id, &clipboard)) {
+    return;
+  }
 
   // check time
   if (m_timeClipboard[id] == 0 || clipboard.getTime() != m_timeClipboard[id]) {

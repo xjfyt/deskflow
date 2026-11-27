@@ -1451,7 +1451,9 @@ void Server::onClipboardChanged(const BaseClientProxy *sender, ClipboardID id, u
   assert(sender == m_clients.find(clipboard.m_clipboardOwner)->second);
 
   // get data
-  sender->getClipboard(id, &clipboard.m_clipboard);
+  if (!sender->getClipboard(id, &clipboard.m_clipboard)) {
+    return;
+  }
 
   std::string data = clipboard.m_clipboard.marshall();
   if (data.size() > m_maximumClipboardSize * 1024) {

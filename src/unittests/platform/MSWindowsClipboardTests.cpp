@@ -8,10 +8,16 @@
 
 #include "MSWindowsClipboardTests.h"
 
+#include "deskflow/Clipboard.h"
 #include "platform/MSWindowsClipboard.h"
 #include "platform/MSWindowsClipboardBitmapConverter.h"
 
+#include <QScopeGuard>
 #include <QtEndian>
+
+#include <shlobj.h>
+
+#include <cstring>
 
 void MSWindowsClipboardTests::initTestCase()
 {
@@ -137,6 +143,62 @@ void MSWindowsClipboardTests::isOwnedByDeskflow()
   MSWindowsClipboard clipboard(NULL);
   QVERIFY(clipboard.open(0));
   QVERIFY(clipboard.isOwnedByDeskflow());
+}
+
+void MSWindowsClipboardTests::preservesNativeFileClipboardDuringClassicSync()
+{
+  CloseClipboard();
+  const auto window =
+      CreateWindowExW(0, L"STATIC", L"Clipboard test owner", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, nullptr, nullptr);
+  QVERIFY(window);
+  const auto destroyWindow = qScopeGuard([window] { DestroyWindow(window); });
+  MSWindowsClipboard native(window);
+  MSWindowsClipboard sync(window, MSWindowsClipboard::Access::ClassicSync);
+
+  for (const auto format : {static_cast<UINT>(CF_HDROP), RegisterClipboardFormatW(L"FileGroupDescriptorW")}) {
+    QVERIFY(format != 0);
+    QVERIFY(native.open(0));
+    const auto close = qScopeGuard([&] { native.close(); });
+    QVERIFY(native.emptyUnowned());
+    // Include a text representation, as shell objects can advertise multiple formats.
+    native.add(IClipboard::Format::Text, m_testString);
+    constexpr wchar_t path[] = L"C:\\deskflow-local-file.txt\0";
+    const auto data = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, sizeof(DROPFILES) + sizeof(path));
+    QVERIFY(data);
+    const auto drop = static_cast<DROPFILES *>(GlobalLock(data));
+    QVERIFY(drop);
+    drop->pFiles = sizeof(DROPFILES);
+    drop->fWide = TRUE;
+    std::memcpy(drop + 1, path, sizeof(path));
+    GlobalUnlock(data);
+    const auto stored = SetClipboardData(format, data);
+    if (!stored)
+      GlobalFree(data);
+    QVERIFY(stored);
+
+    native.close();
+    QVERIFY(!sync.open(0)); // classic ownership grab
+    Clipboard remote;
+    QVERIFY(remote.open(0));
+    remote.add(IClipboard::Format::Text, m_testString2);
+    remote.close();
+    QVERIFY(!Clipboard::copy(&sync, &remote)); // classic remote update
+    QVERIFY(!Clipboard::copy(&remote, &sync)); // classic local read
+
+    QVERIFY(native.open(0));
+    QCOMPARE(GetClipboardData(format), stored);
+    QCOMPARE(native.get(IClipboard::Format::Text), m_testString);
+    QVERIFY(native.emptyUnowned());
+  }
+
+  Clipboard text;
+  QVERIFY(text.open(0));
+  text.add(IClipboard::Format::Text, m_testString2);
+  text.close();
+  QVERIFY(Clipboard::copy(&sync, &text));
+  QVERIFY(native.open(0));
+  const auto close = qScopeGuard([&] { native.close(); });
+  QCOMPARE(native.get(IClipboard::Format::Text), m_testString2);
 }
 
 void MSWindowsClipboardTests::normalisesMalformedMacBitmap()

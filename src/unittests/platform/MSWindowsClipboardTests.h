@@ -28,6 +28,7 @@ private Q_SLOTS:
   void has_withNoFormatAdded();
   void getNonEmptyText();
   void isOwnedByDeskflow();
+  void preservesNativeFileClipboardDuringClassicSync();
   void normalisesMalformedMacBitmap();
   void preservesHealthyMacV5Bitmap();
 

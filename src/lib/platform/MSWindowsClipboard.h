@@ -23,7 +23,13 @@ class IMSWindowsClipboardFacade;
 class MSWindowsClipboard : public IClipboard
 {
 public:
-  MSWindowsClipboard(HWND window);
+  enum class Access
+  {
+    Native,
+    ClassicSync
+  };
+
+  explicit MSWindowsClipboard(HWND window, Access access = Access::Native);
   MSWindowsClipboard(HWND window, IMSWindowsClipboardFacade &facade);
   ~MSWindowsClipboard() override;
 
@@ -44,6 +50,7 @@ public:
 
   //! Test if clipboard is owned by deskflow
   static bool isOwnedByDeskflow();
+  static bool hasFileSelection();
 
   // IClipboard overrides
   bool empty() override;
@@ -69,6 +76,7 @@ private:
   using ConverterList = std::vector<IMSWindowsClipboardConverter *>;
 
   HWND m_window;
+  Access m_access;
   mutable std::mutex m_mutex;
   mutable Time m_time;
   ConverterList m_converters;

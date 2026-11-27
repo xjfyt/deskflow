@@ -1778,6 +1778,14 @@ Enabling this setting will disable the server config GUI.</source>
         <source>Could not forget the saved peer.</source>
         <translation>无法清除保存的对端。</translation>
     </message>
+    <message>
+        <source>Windows switched desktops. Start enhanced input again when ready.</source>
+        <translation>Windows 已切换桌面。准备好后请重新启动增强输入。</translation>
+    </message>
+    <message>
+        <source>Windows switched desktops. Complete the prompt using the local mouse or keyboard.</source>
+        <translation>Windows 已切换桌面。请用本机鼠标或键盘处理系统提示。</translation>
+    </message>
 </context>
 <context>
     <name>deskflow::gui::FileTransferDialog</name>

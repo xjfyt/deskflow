@@ -20,8 +20,9 @@
 
 UINT MSWindowsClipboard::s_ownershipFormat = 0;
 
-MSWindowsClipboard::MSWindowsClipboard(HWND window)
+MSWindowsClipboard::MSWindowsClipboard(HWND window, Access access)
     : m_window(window),
+      m_access(access),
       m_time(0),
       m_facade(new MSWindowsClipboardFacade()),
       m_deleteFacade(true)
@@ -125,6 +126,12 @@ bool MSWindowsClipboard::open(Time time) const
 
   for (int i = 0; i < kMaxRetries; ++i) {
     if (OpenClipboard(m_window)) {
+      // Test while holding the native clipboard lock, before reading or replacing it.
+      if (m_access == Access::ClassicSync && hasFileSelection()) {
+        CloseClipboard();
+        LOG_DEBUG("leaving the local Windows file clipboard intact");
+        return false;
+      }
       std::scoped_lock lock{m_mutex};
       m_time = time;
       return true;
@@ -203,6 +210,14 @@ void MSWindowsClipboard::clearConverters()
     delete *index;
   }
   m_converters.clear();
+}
+
+bool MSWindowsClipboard::hasFileSelection()
+{
+  static const auto fileGroupW = RegisterClipboardFormatW(L"FileGroupDescriptorW");
+  static const auto fileGroup = RegisterClipboardFormatW(L"FileGroupDescriptor");
+  return IsClipboardFormatAvailable(CF_HDROP) || (fileGroupW && IsClipboardFormatAvailable(fileGroupW)) ||
+         (fileGroup && IsClipboardFormatAvailable(fileGroup));
 }
 
 bool MSWindowsClipboard::isOwnedByDeskflow()

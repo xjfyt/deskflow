@@ -303,6 +303,7 @@ private:
   HWND m_window = nullptr;
   DWORD m_clipboardSequenceNumber = 0;
   bool m_ownClipboard = false;
+  bool m_fileClipboard = false;
 
   // one desk per desktop and a cond var to communicate with it
   MSWindowsDesks *m_desks = nullptr;

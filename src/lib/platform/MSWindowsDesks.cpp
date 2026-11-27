@@ -21,8 +21,6 @@
 #include "platform/MSWindowsComputer.h"
 #include "platform/MSWindowsHook.h"
 
-#include <malloc.h>
-
 // these are only defined when WINVER >= 0x0500
 #if !defined(SPI_GETMOUSESPEED)
 #define SPI_GETMOUSESPEED 112
@@ -80,6 +78,8 @@
 #define DESKFLOW_MSG_FAKE_REL_MOVE DESKFLOW_HOOK_LAST_MSG + 11
 // enable; <unused>
 #define DESKFLOW_MSG_FAKE_INPUT DESKFLOW_HOOK_LAST_MSG + 12
+// <unused>; <unused>
+#define DESKFLOW_MSG_PAUSE DESKFLOW_HOOK_LAST_MSG + 13
 
 static void send_keyboard_input(WORD wVk, WORD wScan, DWORD dwFlags)
 {
@@ -170,11 +170,14 @@ void MSWindowsDesks::disable()
 
 void MSWindowsDesks::enter()
 {
+  m_isOnComputer = true;
   sendMessage(DESKFLOW_MSG_ENTER, 0, 0);
 }
 
 void MSWindowsDesks::leave(HKL keyLayout)
 {
+  m_isOnComputer = false;
+  m_keyLayout = keyLayout;
   sendMessage(DESKFLOW_MSG_LEAVE, (WPARAM)keyLayout, 0);
 }
 
@@ -351,8 +354,10 @@ bool MSWindowsDesks::restoreRelativeCursorPosition(Desk *desk) const
 void MSWindowsDesks::sendMessage(UINT msg, WPARAM wParam, LPARAM lParam) const
 {
   if (m_activeDesk != nullptr && m_activeDesk->m_window != nullptr) {
-    PostThreadMessage(m_activeDesk->m_threadID, msg, wParam, lParam);
-    waitForDesk();
+    if (PostThreadMessage(m_activeDesk->m_threadID, msg, wParam, lParam))
+      waitForDesk();
+    else
+      LOG_WARN("could not post message to Windows desktop thread: %lu", GetLastError());
   }
 }
 
@@ -550,11 +555,14 @@ void MSWindowsDesks::deskEnter(Desk *desk)
   // (mouse over activation) but i've no idea how to do that.
   // the obvious workaround of using SetWindowPos() to move it back
   // after being raised doesn't work.
-  DWORD thisThread = GetWindowThreadProcessId(desk->m_window, nullptr);
-  DWORD thatThread = GetWindowThreadProcessId(desk->m_foregroundWindow, nullptr);
-  AttachThreadInput(thatThread, thisThread, TRUE);
-  SetForegroundWindow(desk->m_foregroundWindow);
-  AttachThreadInput(thatThread, thisThread, FALSE);
+  if (desk->m_foregroundWindow) {
+    const DWORD thisThread = GetWindowThreadProcessId(desk->m_window, nullptr);
+    const DWORD thatThread = GetWindowThreadProcessId(desk->m_foregroundWindow, nullptr);
+    const bool attached = AttachThreadInput(thatThread, thisThread, TRUE);
+    SetForegroundWindow(desk->m_foregroundWindow);
+    if (attached)
+      AttachThreadInput(thatThread, thisThread, FALSE);
+  }
   EnableWindow(desk->m_window, desk->m_lowLevel ? FALSE : TRUE);
   desk->m_foregroundWindow = nullptr;
 }
@@ -655,10 +663,7 @@ void MSWindowsDesks::deskThread(const void *vdesk)
   desk->m_threadID = GetCurrentThreadId();
   desk->m_window = nullptr;
   desk->m_foregroundWindow = nullptr;
-  if (desk->m_desk != nullptr && SetThreadDesktop(desk->m_desk) != 0) {
-    // create a message queue
-    PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE);
-
+  if (SetThreadDesktop(desk->m_desk) != 0) {
     // create a window.  we use this window to hide the cursor.
     try {
       desk->m_window = createWindow(m_deskClass, L"DeskflowDesk");
@@ -669,6 +674,9 @@ void MSWindowsDesks::deskThread(const void *vdesk)
     }
   }
 
+  // Even a failed desktop attachment needs a queue so shutdown can post WM_QUIT.
+  PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE);
+
   // tell main thread that we're ready
   {
     Lock lock(&m_mutex);
@@ -676,7 +684,7 @@ void MSWindowsDesks::deskThread(const void *vdesk)
     m_deskReady.broadcast();
   }
 
-  while (GetMessage(&msg, nullptr, 0, 0)) {
+  while (GetMessage(&msg, nullptr, 0, 0) > 0) {
     switch (msg.message) {
     default:
       TranslateMessage(&msg);
@@ -713,14 +721,19 @@ void MSWindowsDesks::deskThread(const void *vdesk)
       break;
 
     case DESKFLOW_MSG_ENTER:
-      m_isOnComputer = true;
       deskEnter(desk);
       break;
 
     case DESKFLOW_MSG_LEAVE:
-      m_isOnComputer = false;
-      m_keyLayout = (HKL)msg.wParam;
-      deskLeave(desk, m_keyLayout);
+      deskLeave(desk, (HKL)msg.wParam);
+      break;
+
+    case DESKFLOW_MSG_PAUSE:
+      deskEnter(desk);
+      if (m_isPrimary && m_useHooks) {
+        MSWindowsHook::uninstallScreenSaver();
+        MSWindowsHook::uninstall();
+      }
       break;
 
     case DESKFLOW_MSG_FAKE_KEY:
@@ -789,12 +802,9 @@ void MSWindowsDesks::deskThread(const void *vdesk)
   }
 
   // clean up
-  deskEnter(desk);
   if (desk->m_window != nullptr) {
+    deskEnter(desk);
     DestroyWindow(desk->m_window);
-  }
-  if (desk->m_desk != nullptr) {
-    closeDesktop(desk->m_desk);
   }
 }
 
@@ -806,19 +816,27 @@ MSWindowsDesks::Desk *MSWindowsDesks::addDesk(const std::wstring &name, HDESK hd
   desk->m_targetID = GetCurrentThreadId();
   desk->m_thread = new Thread(new TMethodJob<MSWindowsDesks>(this, &MSWindowsDesks::deskThread, desk));
   waitForDesk();
+  if (!desk->m_window) {
+    removeDesk(desk);
+    return nullptr;
+  }
   m_desks.try_emplace(name, desk);
   return desk;
 }
 
+void MSWindowsDesks::removeDesk(Desk *desk)
+{
+  PostThreadMessage(desk->m_threadID, WM_QUIT, 0, 0);
+  desk->m_thread->wait();
+  closeDesktop(desk->m_desk);
+  delete desk->m_thread;
+  delete desk;
+}
+
 void MSWindowsDesks::removeDesks()
 {
-  for (Desks::iterator index = m_desks.begin(); index != m_desks.end(); ++index) {
-    Desk *desk = index->second;
-    PostThreadMessage(desk->m_threadID, WM_QUIT, 0, 0);
-    desk->m_thread->wait();
-    delete desk->m_thread;
-    delete desk;
-  }
+  for (const auto &entry : m_desks)
+    removeDesk(entry.second);
   m_desks.clear();
   m_activeDesk = nullptr;
   m_activeDeskName = L"";
@@ -826,66 +844,59 @@ void MSWindowsDesks::removeDesks()
 
 void MSWindowsDesks::checkDesk()
 {
-  // get current desktop.  if we already know about it then return.
-  Desk *desk;
   HDESK hdesk = openInputDesktop();
-  std::wstring name = getDesktopName(hdesk);
-  Desks::const_iterator index = m_desks.find(name);
-  if (index == m_desks.end()) {
+  const auto name = getDesktopName(hdesk);
+  if (name.empty()) {
+    closeDesktop(hdesk);
+    pauseDesk();
+    return;
+  }
+
+  if (name == m_activeDeskName) {
+    closeDesktop(hdesk);
+    return;
+  }
+  // Avoid switching to a screensaver desktop and waking it.
+  if (m_screensaver->isActive()) {
+    closeDesktop(hdesk);
+    PostThreadMessage(m_threadID, DESKFLOW_MSG_SCREEN_SAVER, TRUE, 0);
+    return;
+  }
+
+  Desk *desk = nullptr;
+  const auto existing = m_desks.find(name);
+  if (existing == m_desks.end()) {
     desk = addDesk(name, hdesk);
-    // hold on to hdesk until thread exits so the desk can't
-    // be removed by the system
   } else {
     closeDesktop(hdesk);
-    desk = index->second;
+    desk = existing->second;
+  }
+  if (!desk) {
+    pauseDesk();
+    return;
   }
 
-  // if active desktop changed then tell the old and new desk threads
-  // about the change.  don't switch desktops when the screensaver is
-  // active becaue we'd most likely switch to the screensaver desktop
-  // which would have the side effect of forcing the screensaver to
-  // stop.
-  if (name != m_activeDeskName && !m_screensaver->isActive()) {
-    // show cursor on previous desk
-    bool wasOnComputer = m_isOnComputer;
-    if (!wasOnComputer) {
-      sendMessage(DESKFLOW_MSG_ENTER, 0, 0);
-    }
-
-    // always sync keys when switching desks to ensure keyboard modifier
-    // states are correct.
-    LOG_DEBUG("switched to desk \"%ls\"", name.c_str());
-    bool syncKeys = false;
-    if (isDeskAccessible(desk)) {
-      LOG_DEBUG("desktop is accessible, syncing keyboard state after desk switch");
-      syncKeys = true;
-    } else {
-      LOG_DEBUG("desktop is inaccessible");
-    }
-
-    // switch desk
-    m_activeDesk = desk;
-    m_activeDeskName = name;
-    sendMessage(DESKFLOW_MSG_SWITCH, 0, 0);
-
-    // hide cursor on new desk
-    if (!wasOnComputer) {
-      sendMessage(DESKFLOW_MSG_LEAVE, (WPARAM)m_keyLayout, 0);
-    }
-
-    // update keys if necessary
-    if (syncKeys) {
-      updateKeys();
-    }
-  } else if (name != m_activeDeskName) {
-    // screen saver might have started
-    PostThreadMessage(m_threadID, DESKFLOW_MSG_SCREEN_SAVER, TRUE, 0);
-  }
+  if (!m_isOnComputer)
+    sendMessage(DESKFLOW_MSG_ENTER, 0, 0);
+  m_activeDesk = desk;
+  m_activeDeskName = name;
+  LOG_DEBUG("switched to desk \"%ls\"", name.c_str());
+  sendMessage(DESKFLOW_MSG_SWITCH, 0, 0);
+  // A client should keep its physical cursor available after a desktop switch.
+  // Only the primary needs its relay hider until control returns.
+  if (m_isPrimary && !m_isOnComputer)
+    sendMessage(DESKFLOW_MSG_LEAVE, (WPARAM)m_keyLayout, 0);
+  updateKeys();
 }
 
-bool MSWindowsDesks::isDeskAccessible(const Desk *desk) const
+void MSWindowsDesks::pauseDesk()
 {
-  return (desk != nullptr && desk->m_desk != nullptr);
+  if (!m_activeDesk)
+    return;
+  LOG_DEBUG("input desktop inaccessible, releasing cursor capture until it returns");
+  sendMessage(DESKFLOW_MSG_PAUSE, 0, 0);
+  m_activeDesk = nullptr;
+  m_activeDeskName.clear();
 }
 
 void MSWindowsDesks::waitForDesk() const
@@ -915,7 +926,9 @@ void MSWindowsDesks::handleCheckDesk()
 HDESK
 MSWindowsDesks::openInputDesktop()
 {
-  return OpenInputDesktop(DF_ALLOWOTHERACCOUNTHOOK, TRUE, DESKTOP_CREATEWINDOW | DESKTOP_HOOKCONTROL | GENERIC_WRITE);
+  return OpenInputDesktop(
+      DF_ALLOWOTHERACCOUNTHOOK, FALSE, DESKTOP_CREATEWINDOW | DESKTOP_HOOKCONTROL | DESKTOP_READOBJECTS | GENERIC_WRITE
+  );
 }
 
 void MSWindowsDesks::closeDesktop(HDESK desk)
@@ -927,16 +940,17 @@ void MSWindowsDesks::closeDesktop(HDESK desk)
 
 std::wstring MSWindowsDesks::getDesktopName(HDESK desk)
 {
-  if (desk == nullptr) {
-    return std::wstring();
-  } else {
-    DWORD size;
-    GetUserObjectInformation(desk, UOI_NAME, nullptr, 0, &size);
-    TCHAR *name = (TCHAR *)alloca(size + sizeof(TCHAR));
-    GetUserObjectInformation(desk, UOI_NAME, name, size, &size);
-    std::wstring result(name);
-    return result;
-  }
+  if (!desk)
+    return {};
+  DWORD size = 0;
+  GetUserObjectInformationW(desk, UOI_NAME, nullptr, 0, &size);
+  if (size <= sizeof(wchar_t) || size % sizeof(wchar_t) != 0)
+    return {};
+  std::wstring name(size / sizeof(wchar_t), L'\0');
+  if (!GetUserObjectInformationW(desk, UOI_NAME, name.data(), size, &size))
+    return {};
+  name.pop_back();
+  return name;
 }
 
 HWND MSWindowsDesks::getForegroundWindow() const
