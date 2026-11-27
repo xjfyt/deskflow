@@ -229,6 +229,11 @@ enum class EventTypes : uint32_t
       The data is a pointer to a ClipboardInfo.
   */
   ClipboardChanged,
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  ClipboardFilesChanged,
+  FileTransferReceive,
+  FileTransferWake,
+#endif
 
   /// This event is sent whenever a clipboard chunk is transferred.
   ClipboardSending,

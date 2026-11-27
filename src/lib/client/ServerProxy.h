@@ -12,6 +12,9 @@
 #include "deskflow/ClipboardChunk.h"
 #include "deskflow/ClipboardTypes.h"
 #include "deskflow/KeyTypes.h"
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include "deskflow/OptionTypes.h"
+#endif
 
 class Client;
 class ClientInfo;
@@ -48,7 +51,7 @@ public:
   //@{
 
   void onInfoChanged();
-  bool onGrabClipboard(ClipboardID);
+  virtual bool onGrabClipboard(ClipboardID);
   void onClipboardChanged(ClipboardID, const IClipboard *);
 
   //@}
@@ -63,6 +66,12 @@ protected:
 
   virtual ConnectionResult parseHandshakeMessage(const uint8_t *code);
   virtual ConnectionResult parseMessage(const uint8_t *code);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  virtual void onOptionsChanged(const OptionsList &) {}
+  virtual void onOptionsReset() {}
+  virtual void onRemoteClipboardChanged(ClipboardID) {}
+  uint32_t getCurrentMessageSize() const { return m_currentMessageSize; }
+#endif
   void keyDown(uint16_t id, uint16_t mask, uint16_t button, const std::string &lang);
   void keyRepeat(uint16_t id, uint16_t mask, uint16_t count, uint16_t button, const std::string &lang);
 
@@ -115,6 +124,9 @@ private:
   deskflow::IStream *m_stream = nullptr;
 
   uint32_t m_seqNum = 0;
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  uint32_t m_currentMessageSize = 0;
+#endif
 
   bool m_compressMouse = false;
   bool m_compressMouseRelative = false;

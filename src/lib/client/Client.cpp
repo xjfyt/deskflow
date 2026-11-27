@@ -7,6 +7,10 @@
  */
 
 #include "client/Client.h"
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include "client/ServerProxyFileTransfer.h"
+#include "deskflow/FileTransferBridge.h"
+#endif
 
 #include "arch/Arch.h"
 #include "base/IEventQueue.h"
@@ -256,6 +260,20 @@ void Client::setClipboard(ClipboardID id, const IClipboard *clipboard)
   m_sentClipboard[id] = false;
 }
 
+#ifdef DESKFLOW_AUTO_FILE_COPY
+bool Client::publishTransferredFiles(const QStringList &paths, std::optional<uint32_t> expectedSequence)
+{
+  if (!m_enableClipboard || m_maximumClipboardSize == 0 ||
+      (expectedSequence && !deskflow::FileTransferBridge::publishFiles(m_computer, paths, *expectedSequence)))
+    return false;
+  for (ClipboardID id = 0; id < kClipboardEnd; ++id) {
+    m_ownClipboard[id] = false;
+    m_sentClipboard[id] = false;
+  }
+  return true;
+}
+#endif
+
 void Client::grabClipboard(ClipboardID id)
 {
   m_computer->grabClipboard(id);
@@ -483,6 +501,12 @@ bool Client::setupComputer(int16_t protocolMinor)
     m_server = new ServerProxy1_7(this, m_stream, m_events);
     break;
   case 8:
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    if (m_useSecureNetwork) {
+      m_server = new ServerProxyFileTransfer(this, m_stream, m_events);
+      break;
+    }
+#endif
     m_server = new ServerProxy1_8(this, m_stream, m_events);
     break;
   default:
@@ -496,6 +520,14 @@ bool Client::setupComputer(int16_t protocolMinor)
     m_events->addHandler(EventTypes::ClipboardGrabbed, getEventTarget(), [this](const auto &e) {
       handleClipboardGrabbed(e);
     });
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    m_events->addHandler(EventTypes::ClipboardFilesChanged, getEventTarget(), [this](const auto &) {
+      if (m_enableClipboard && m_maximumClipboardSize != 0) {
+        if (auto *transfer = dynamic_cast<ServerProxyFileTransfer *>(m_server))
+          transfer->offerFiles();
+      }
+    });
+#endif
   }
   return m_server != nullptr;
 }
@@ -548,6 +580,9 @@ void Client::cleanupComputer()
     }
     m_events->removeHandler(EventTypes::ComputerShapeChanged, getEventTarget());
     m_events->removeHandler(EventTypes::ClipboardGrabbed, getEventTarget());
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    m_events->removeHandler(EventTypes::ClipboardFilesChanged, getEventTarget());
+#endif
     delete m_server;
     m_server = nullptr;
   }

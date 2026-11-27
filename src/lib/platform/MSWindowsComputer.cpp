@@ -23,6 +23,10 @@
 #include "deskflow/DisplayException.h"
 #include "deskflow/KeyMap.h"
 #include "platform/MSWindowsClipboard.h"
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include "deskflow/FileTransferBridge.h"
+#include <oleidl.h>
+#endif
 #include "platform/MSWindowsDesks.h"
 #include "platform/MSWindowsEventQueueBuffer.h"
 #include "platform/MSWindowsKeyState.h"
@@ -337,6 +341,30 @@ bool MSWindowsComputer::setClipboard(ClipboardID, const IClipboard *src)
     return grabbed;
   }
 }
+
+#ifdef DESKFLOW_AUTO_FILE_COPY
+bool MSWindowsComputer::publishFileClipboard(const std::string &files, DWORD expectedSequence)
+{
+  if (deskflow::fileagent::processIdentity() != deskflow::fileagent::ProcessIdentity::User)
+    return false;
+  MSWindowsClipboard native(m_window);
+  if (!native.open(0))
+    return false;
+  if (GetClipboardSequenceNumber() != expectedSequence || !native.empty()) {
+    native.close();
+    return false;
+  }
+  native.add(IClipboard::Format::Files, files);
+  const auto effect = GetClipboardData(RegisterClipboardFormatW(L"Preferred DropEffect"));
+  const auto *value = effect && GlobalSize(effect) >= sizeof(DWORD) ? static_cast<const DWORD *>(GlobalLock(effect))
+                                                                 : nullptr;
+  const bool published = IsClipboardFormatAvailable(CF_HDROP) && value && *value == DROPEFFECT_COPY;
+  if (value)
+    GlobalUnlock(effect);
+  native.close();
+  return published;
+}
+#endif
 
 void MSWindowsComputer::checkClipboards()
 {
@@ -929,7 +957,7 @@ bool MSWindowsComputer::onEvent(HWND, UINT msg, WPARAM wParam, LPARAM lParam, LR
 
     if (clipboardSequenceNumber && (clipboardSequenceNumber != m_clipboardSequenceNumber)) {
       m_clipboardSequenceNumber = clipboardSequenceNumber;
-      onClipboardChange();
+      onClipboardChange(true);
     }
     return 0; // message processed
   }
@@ -1331,11 +1359,19 @@ bool MSWindowsComputer::onDisplayChange()
   return true;
 }
 
-void MSWindowsComputer::onClipboardChange()
+void MSWindowsComputer::onClipboardChange(bool changed)
 {
   if (MSWindowsClipboard::hasFileSelection()) {
     m_fileClipboard = true;
     m_ownClipboard = false;
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    if (changed && deskflow::FileTransferBridge::enabled() && IsClipboardFormatAvailable(CF_HDROP) &&
+        !MSWindowsClipboard::isOwnedByDeskflow() &&
+        deskflow::fileagent::processIdentity() == deskflow::fileagent::ProcessIdentity::User)
+      sendEvent(EventTypes::ClipboardFilesChanged);
+#else
+    (void)changed;
+#endif
     return;
   }
   const bool wasFileClipboard = m_fileClipboard;

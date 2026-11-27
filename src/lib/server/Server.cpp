@@ -7,6 +7,11 @@
  */
 
 #include "server/Server.h"
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include "common/Settings.h"
+#include "deskflow/FileTransferBridge.h"
+#include "server/ClientProxyFileTransfer.h"
+#endif
 
 #include "base/IEventQueue.h"
 #include "base/Log.h"
@@ -272,6 +277,14 @@ void Server::adoptClient(BaseClientProxy *client)
 
   // send configuration options to client
   sendOptions(client);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  if (m_clients.size() == 3) {
+    for (const auto &[name, peer] : m_clients) {
+      if (peer != client && dynamic_cast<ClientProxyFileTransfer *>(peer))
+        sendOptions(peer);
+    }
+  }
+#endif
 
   // activate computer saver on new client if active on the primary computer
   if (m_activeSaver != nullptr) {
@@ -492,7 +505,14 @@ void Server::switchComputer(BaseClientProxy *dst, int32_t x, int32_t y, bool for
     // enter new computer
     m_active->enter(x, y, m_seqNum, m_primaryClient->getToggleMask(), forScreensaver);
 
-    if (m_enableClipboard) {
+    if (m_enableClipboard
+#ifdef DESKFLOW_AUTO_FILE_COPY
+        && !std::any_of(m_clients.begin(), m_clients.end(), [](const auto &entry) {
+             const auto *transfer = dynamic_cast<const ClientProxyFileTransfer *>(entry.second);
+             return transfer && transfer->hasActiveFileTransfer();
+           })
+#endif
+    ) {
       // send the clipboard data to new active computer
       for (ClipboardID id = 0; id < kClipboardEnd; ++id) {
         // Hackity hackity hack
@@ -1188,6 +1208,14 @@ void Server::handleClipboardGrabbed(const Event &event, BaseClientProxy *grabber
   );
   clipboard.m_clipboardOwner = getName(grabber);
   clipboard.m_clipboardSeqNum = info->m_sequenceNumber;
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  if (info->m_id == kClipboardClipboard) {
+    for (const auto &[name, peer] : m_clients) {
+      if (auto *transfer = dynamic_cast<ClientProxyFileTransfer *>(peer))
+        transfer->sourceClipboardChanged();
+    }
+  }
+#endif
 
   // clear the clipboard data (since it's not known at this point)
   if (clipboard.m_clipboard.open(0)) {
@@ -1480,6 +1508,29 @@ void Server::onClipboardChanged(const BaseClientProxy *sender, ClipboardID id, u
   // send the new clipboard to the active computer
   m_active->setClipboard(id, &clipboard.m_clipboard);
 }
+
+#ifdef DESKFLOW_AUTO_FILE_COPY
+bool Server::canTransferFiles() const
+{
+  return m_enableClipboard && m_maximumClipboardSize != 0 && m_clients.size() == 2 &&
+         Settings::value(Settings::Security::CheckPeers).toBool() && deskflow::FileTransferBridge::enabled();
+}
+
+bool Server::publishTransferredFiles(
+    const BaseClientProxy *sender, const QStringList &paths, std::optional<uint32_t> expectedSequence
+)
+{
+  if (!canTransferFiles() || !m_clientSet.contains(const_cast<BaseClientProxy *>(sender)))
+    return false;
+  const auto *transfer = dynamic_cast<const ClientProxyFileTransfer *>(sender);
+  if (!transfer || !transfer->canTransferFiles() ||
+      (expectedSequence && !deskflow::FileTransferBridge::publishFiles(m_computer, paths, *expectedSequence)))
+    return false;
+  for (ClipboardID id = 0; id < kClipboardEnd; ++id)
+    m_primaryClient->setClipboardDirty(id, false);
+  return true;
+}
+#endif
 
 void Server::onScreensaver(bool activated)
 {
@@ -1905,6 +1956,18 @@ bool Server::addClient(BaseClientProxy *client)
   m_events->addHandler(EventTypes::ClipboardChanged, client->getEventTarget(), [this, client](const auto &e) {
     handleClipboardChanged(e, client);
   });
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  if (client == m_primaryClient) {
+    m_events->addHandler(EventTypes::ClipboardFilesChanged, client->getEventTarget(), [this](const auto &) {
+      if (!canTransferFiles())
+        return;
+      for (const auto &[name, peer] : m_clients) {
+        if (auto *transfer = dynamic_cast<ClientProxyFileTransfer *>(peer))
+          transfer->offerFiles();
+      }
+    });
+  }
+#endif
 
   // add to list
   m_clientSet.insert(client);
@@ -1935,10 +1998,22 @@ bool Server::removeClient(BaseClientProxy *client)
   m_events->removeHandler(ComputerShapeChanged, client->getEventTarget());
   m_events->removeHandler(ClipboardGrabbed, client->getEventTarget());
   m_events->removeHandler(ClipboardChanged, client->getEventTarget());
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  if (client == m_primaryClient)
+    m_events->removeHandler(ClipboardFilesChanged, client->getEventTarget());
+#endif
 
   // remove from list
   m_clients.erase(getName(client));
   m_clientSet.erase(i);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  if (m_clients.size() == 2 && client != m_primaryClient) {
+    for (const auto &[name, peer] : m_clients) {
+      if (dynamic_cast<ClientProxyFileTransfer *>(peer))
+        sendOptions(peer);
+    }
+  }
+#endif
 
   return true;
 }

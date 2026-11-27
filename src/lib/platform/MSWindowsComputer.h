@@ -112,6 +112,9 @@ public:
   bool canLeave() override;
   void leave() override;
   bool setClipboard(ClipboardID, const IClipboard *) override;
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  bool publishFileClipboard(const std::string &files, DWORD expectedSequence);
+#endif
   void checkClipboards() override;
   void openScreensaver(bool notify) override;
   void closeScreensaver() override;
@@ -173,7 +176,7 @@ private: // HACK
   bool onMouseWheel(int32_t xDelta, int32_t yDelta);
   bool onScreensaver(bool activated);
   bool onDisplayChange();
-  void onClipboardChange();
+  void onClipboardChange(bool changed = false);
 
   // warp cursor without discarding queued events
   void warpCursorNoFlush(int32_t x, int32_t y);

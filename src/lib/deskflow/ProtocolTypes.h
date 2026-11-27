@@ -448,6 +448,11 @@ extern const char *const kMsgCScreenSaver;
  * @since Protocol version 1.0
  */
 extern const char *const kMsgCResetOptions;
+#ifdef DESKFLOW_AUTO_FILE_COPY
+extern const char *const kMsgCFileCopyHello;
+extern const char *const kMsgCFileCopyAck;
+extern const char *const kMsgDFileCopy;
+#endif
 
 /**
  * @brief Computer information acknowledgment

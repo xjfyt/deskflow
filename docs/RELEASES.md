@@ -19,7 +19,7 @@
 | macOS | Intel、Apple Silicon | DMG |
 | Debian 13 | amd64、arm64 | DEB |
 
-打包会检查 ZIP 的主程序、DMG 的镜像校验和，以及 DEB 的架构和安装位置。各架构还运行证书、文件传输、输入协议和合成中继用例。发布任务复核八个包和 SHA-256 后再创建 Release。Windows 包使用现有 CPack/WiX 安装规则。macOS CI 包采用临时本地签名，Developer ID 发行签名和 Apple 公证需要发行者的凭据。实机测试和签名状态应单独记录。
+打包会检查 Windows ZIP 中的主程序、core 和 `deskflow-file-agent.exe`，校验 DMG 镜像以及 DEB 的架构和安装位置。各架构运行证书、文件传输、输入协议和合成中继用例。Windows 额外运行自动文件剪贴板的协议、缓存和收发用例。发布任务复核八个包和 SHA-256 后再创建 Release。Windows 包使用现有 CPack/WiX 安装规则。验证后台服务模式时使用 MSI。便携 ZIP 有自己的设置文件，可用于普通用户模式。macOS CI 包采用临时本地签名，Developer ID 发行签名和 Apple 公证需要发行者的凭据。实机测试和签名状态应单独记录。
 
 正式标签的发布任务会重新计算全部八个包的 SHA-256，并与各架构的清单逐项比对。若标签已有 Release，重跑会核对是否已发布、发行类型是否匹配，以及八个包和 `SHA256SUMS` 是否齐全。残留草稿或缺少资产会使任务失败，原 Release 保留供检查。
 

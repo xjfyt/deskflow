@@ -162,7 +162,7 @@ void ClientListener::handleClientAccepted(IDataSocket *socket)
   assert(m_server != nullptr);
 
   // create proxy for unknown client
-  auto *client = new ClientProxyUnknown(stream, 30.0, m_server, m_events);
+  auto *client = new ClientProxyUnknown(stream, 30.0, m_server, m_events, m_securityLevel == SecurityLevel::PeerAuth);
 
   m_newClients.insert(client);
 

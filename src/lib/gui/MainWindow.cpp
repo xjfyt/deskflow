@@ -264,6 +264,29 @@ void MainWindow::connectSlots()
       &m_coreProcess, &CoreProcess::daemonIpcClientConnectionFailed, this, &MainWindow::daemonIpcClientConnectionFailed
   );
   connect(&m_coreProcess, &CoreProcess::securityLevelChanged, m_statusBar, &StatusBar::setSecurityLevel);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  connect(&m_coreProcess, &CoreProcess::fileClipboardActivity, this, [this](const QString &state) {
+    QString message;
+    if (state == QStringLiteral("ready"))
+      message = tr("Files received. Press Ctrl+V in File Explorer to paste.");
+    else if (state == QStringLiteral("preparing") || state == QStringLiteral("sending"))
+      message = tr("Sending copied files…");
+    else if (state == QStringLiteral("receiving"))
+      message = tr("Receiving copied files…");
+    else if (state == QStringLiteral("completed"))
+      message = tr("Copied files sent.");
+    else if (state == QStringLiteral("failed"))
+      message = tr("File clipboard transfer failed.");
+    else if (state == QStringLiteral("cancelled"))
+      message = tr("File clipboard transfer cancelled.");
+    else if (state == QStringLiteral("agentUnavailable"))
+      message = tr("File clipboard is unavailable in this Windows session.");
+    if (!message.isEmpty())
+      m_statusBar->showMessage(message, 20000);
+    else if (state == QStringLiteral("cleared"))
+      m_statusBar->clearMessage();
+  });
+#endif
 
   connect(m_actionAbout, &QAction::triggered, this, &MainWindow::openAboutDialog);
   connect(m_actionMinimize, &QAction::triggered, this, &MainWindow::hide);

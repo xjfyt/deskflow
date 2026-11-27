@@ -94,6 +94,9 @@ Q_SIGNALS:
   void retryIn(int seconds);
   void peerFingerprint(const QString &fingerprint);
   void missingKeyboardLayouts(const QString &layouts);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  void fileClipboardActivity(const QString &state);
+#endif
 
 private Q_SLOTS:
   void onProcessFinished(int exitCode, QProcess::ExitStatus);

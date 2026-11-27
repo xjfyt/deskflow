@@ -21,6 +21,11 @@ const char *const kMsgCLeave = "COUT";
 const char *const kMsgCClipboard = "CCLP%1i%4i";
 const char *const kMsgCScreenSaver = "CSEC%1i";
 const char *const kMsgCResetOptions = "CROP";
+#ifdef DESKFLOW_AUTO_FILE_COPY
+const char *const kMsgCFileCopyHello = "DFCH";
+const char *const kMsgCFileCopyAck = "DFCA";
+const char *const kMsgDFileCopy = "DFCD%s";
+#endif
 const char *const kMsgCInfoAck = "CIAK";
 const char *const kMsgCKeepAlive = "CALV";
 

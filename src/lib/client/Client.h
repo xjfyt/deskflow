@@ -18,6 +18,9 @@
 
 #include <climits>
 #include <string>
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include <QStringList>
+#endif
 
 class Event;
 class EventQueueTimer;
@@ -41,6 +44,10 @@ This class implements the top-level client algorithms for deskflow.
 class Client : public IClient
 {
 public:
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  bool publishTransferredFiles(const QStringList &paths, std::optional<uint32_t> expectedSequence);
+  bool fileClipboardEnabled() const { return m_enableClipboard && m_maximumClipboardSize != 0; }
+#endif
   class DisconnectRequest : public EventData
   {
   public:

@@ -1,0 +1,125 @@
+/*
+ * Deskflow -- mouse and keyboard sharing utility
+ * SPDX-FileCopyrightText: (C) 2026 Deskflow Developers
+ * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+ */
+
+#include "server/ClientProxyFileTransfer.h"
+
+#include "deskflow/FileTransferProtocol.h"
+#include "deskflow/OptionTypes.h"
+#include "deskflow/ProtocolTypes.h"
+#include "deskflow/ProtocolUtil.h"
+#include "server/Server.h"
+
+#include <cstring>
+
+ClientProxyFileTransfer::ClientProxyFileTransfer(
+    const std::string &name, deskflow::IStream *stream, Server *server, IEventQueue *events
+)
+    : ClientProxy1_8(name, stream, server, events),
+      m_transfer(
+          events, stream,
+          [this, server](const QStringList &paths, std::optional<uint32_t> expectedSequence) {
+            return server->publishTransferredFiles(this, paths, expectedSequence);
+          },
+          [server] { return server->canTransferFiles(); }
+      )
+{
+  m_transfer.setReadyCallback([this] {
+    if (m_haveOptions)
+      setOptions(m_lastOptions);
+  });
+}
+
+void ClientProxyFileTransfer::setOptions(const OptionsList &options)
+{
+  if (options.size() % 2 != 0) {
+    ClientProxy1_8::setOptions(options);
+    return;
+  }
+  m_lastOptions = options;
+  m_haveOptions = true;
+  OptionsList advertised;
+  for (size_t i = 0; i < options.size(); i += 2) {
+    if (options[i] != kOptionFileCopy) {
+      advertised.push_back(options[i]);
+      advertised.push_back(options[i + 1]);
+    }
+  }
+  m_advertised = m_server->canTransferFiles() && m_transfer.available();
+  if (m_advertised) {
+    m_everAdvertised = true;
+    advertised.push_back(kOptionFileCopy);
+    advertised.push_back(kFileCopyCapability);
+  } else {
+    m_negotiated = false;
+    m_transfer.setNegotiated(false);
+  }
+  ClientProxy1_8::setOptions(advertised);
+}
+
+void ClientProxyFileTransfer::resetOptions()
+{
+  m_haveOptions = false;
+  m_advertised = false;
+  m_negotiated = false;
+  m_transfer.setNegotiated(false);
+  ClientProxy1_8::resetOptions();
+}
+
+bool ClientProxyFileTransfer::parseMessage(const uint8_t *code)
+{
+  if (std::memcmp(code, kMsgCFileCopyHello, 4) == 0) {
+    if (getCurrentMessageSize() != 4 || (!m_advertised && !m_everAdvertised)) {
+      throw BadClientException();
+    }
+    if (!m_advertised || !m_transfer.available())
+      return true;
+    // A replacement user agent reuses the authenticated keyboard connection.
+    // Revoke the previous file lifetime before acknowledging the fresh hello.
+    if (m_negotiated)
+      m_transfer.setNegotiated(false);
+    ProtocolUtil::writef(getStream(), kMsgCFileCopyAck);
+    m_negotiated = true;
+    m_everNegotiated = true;
+    m_transfer.setNegotiated(true);
+    return true;
+  }
+  if (std::memcmp(code, kMsgDFileCopy, 4) == 0) {
+    if (!m_negotiated && !m_everNegotiated) {
+      throw BadClientException();
+    }
+    const auto payload = deskflow::filetransfer::readFrame(getStream(), getCurrentMessageSize());
+    if (!m_negotiated)
+      return true;
+    if (m_server->canTransferFiles()) {
+      m_transfer.receive(payload);
+    } else {
+      m_transfer.cancel(QStringLiteral("File copying requires exactly two computers with clipboard sharing enabled"));
+    }
+    return true;
+  }
+  return ClientProxy1_8::parseMessage(code);
+}
+
+void ClientProxyFileTransfer::offerFiles()
+{
+  if (m_negotiated && m_server->canTransferFiles())
+    m_transfer.offerClipboardFiles();
+}
+
+void ClientProxyFileTransfer::sourceClipboardChanged()
+{
+  m_transfer.sourceClipboardChanged();
+}
+
+bool ClientProxyFileTransfer::canTransferFiles() const
+{
+  return m_negotiated && m_transfer.available();
+}
+
+bool ClientProxyFileTransfer::hasActiveFileTransfer() const
+{
+  return m_transfer.active();
+}

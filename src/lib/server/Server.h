@@ -21,6 +21,9 @@
 #include <map>
 #include <set>
 #include <vector>
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include <QStringList>
+#endif
 
 class BaseClientProxy;
 class EventQueueTimer;
@@ -42,6 +45,12 @@ class Server
   using ServerConfig = deskflow::server::Config;
 
 public:
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  bool canTransferFiles() const;
+  bool publishTransferredFiles(
+      const BaseClientProxy *sender, const QStringList &paths, std::optional<uint32_t> expectedSequence
+  );
+#endif
   //! Lock cursor to computer data
   class LockCursorToComputerInfo : public EventData
   {

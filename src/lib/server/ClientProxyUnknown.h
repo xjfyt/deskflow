@@ -21,7 +21,7 @@ class IEventQueue;
 class ClientProxyUnknown
 {
 public:
-  ClientProxyUnknown(deskflow::IStream *stream, double timeout, Server *server, IEventQueue *events);
+  ClientProxyUnknown(deskflow::IStream *stream, double timeout, Server *server, IEventQueue *events, bool authenticatedPeer);
   ClientProxyUnknown(ClientProxyUnknown const &) = delete;
   ClientProxyUnknown(ClientProxyUnknown &&) = delete;
   ~ClientProxyUnknown();
@@ -68,4 +68,5 @@ private:
   bool m_ready = false;
   Server *m_server = nullptr;
   IEventQueue *m_events = nullptr;
+  bool m_authenticatedPeer;
 };

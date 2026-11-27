@@ -155,6 +155,7 @@ jobs:
               cmake -E tar tf "${zip[0]}" > package-contents.txt
               grep -qE '(^|/)deskflow\.exe$' package-contents.txt
               grep -qE '(^|/)deskflow-core\.exe$' package-contents.txt
+              grep -qE '(^|/)deskflow-file-agent\.exe$' package-contents.txt
               cp "${zip[0]}" "${msi[0]}" release/
               ;;
             macOS)
@@ -196,7 +197,7 @@ jobs:
             export PATH="$PWD/$(dirname "$core"):$PATH"
           fi
           ctest --test-dir build/src/unittests --timeout 90 --output-on-failure \
-            -R '^(Enhanced.*|SecureUtilsTests)$'
+            -R '^(Enhanced.*|SecureUtilsTests|FileTransfer(Session|Protocol|Format|Cache)Tests|FileAgentProtocolTests)$'
           case "$RUNNER_OS" in
             Windows)
               python docs/validation/test_input_hub.py "$core"

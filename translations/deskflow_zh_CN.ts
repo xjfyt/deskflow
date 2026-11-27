@@ -982,6 +982,34 @@ Additionally, check you are able to %1 the server config file: %2</source>
         <source>Enhanced Input (Windows Preview)…</source>
         <translation>增强输入（Windows 预览）…</translation>
     </message>
+    <message>
+        <source>Files received. Press Ctrl+V in File Explorer to paste.</source>
+        <translation>文件已接收，可在资源管理器按 Ctrl+V 粘贴。</translation>
+    </message>
+    <message>
+        <source>Sending copied files…</source>
+        <translation>正在发送复制的文件…</translation>
+    </message>
+    <message>
+        <source>Receiving copied files…</source>
+        <translation>正在接收复制的文件…</translation>
+    </message>
+    <message>
+        <source>Copied files sent.</source>
+        <translation>复制的文件已发送。</translation>
+    </message>
+    <message>
+        <source>File clipboard transfer failed.</source>
+        <translation>剪贴板文件传输失败。</translation>
+    </message>
+    <message>
+        <source>File clipboard transfer cancelled.</source>
+        <translation>剪贴板文件传输已取消。</translation>
+    </message>
+    <message>
+        <source>File clipboard is unavailable in this Windows session.</source>
+        <translation>当前 Windows 会话暂时无法使用文件剪贴板。</translation>
+    </message>
 </context>
 <context>
     <name>NewComputerWidget</name>

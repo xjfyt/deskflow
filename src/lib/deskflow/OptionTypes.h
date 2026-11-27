@@ -57,6 +57,10 @@ static const OptionID kOptionDefaultLockToComputerState = OPTION_CODE("LTSS");
 static const OptionID kOptionDisableLockToComputer = OPTION_CODE("DLTS");
 static const OptionID kOptionClipboardSharing = OPTION_CODE("CLPS");
 static const OptionID kOptionClipboardSharingSize = OPTION_CODE("CLSZ");
+#ifdef DESKFLOW_AUTO_FILE_COPY
+static const OptionID kOptionFileCopy = OPTION_CODE("DFCF");
+inline constexpr uint32_t kFileCopyCapability = 1;
+#endif
 //@}
 
 //! @name Computer switch corner masks

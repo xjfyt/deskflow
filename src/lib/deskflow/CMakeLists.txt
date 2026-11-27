@@ -104,6 +104,7 @@ endif()
 if(BUILD_ENHANCED AND WIN32)
   target_sources(${lib_name} PRIVATE
     FileAgentProtocol.cpp
+    FileTransferBridge.cpp
     FileTransferFormat.cpp
     FileTransferSession.cpp
     WindowsFileAgentTransport.cpp

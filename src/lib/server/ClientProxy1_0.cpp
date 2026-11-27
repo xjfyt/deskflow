@@ -109,6 +109,9 @@ void ClientProxy1_0::handleData()
 {
   // handle messages until there are no more.  first read message code.
   uint8_t code[4];
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  m_currentMessageSize = getStream()->getSize();
+#endif
   uint32_t n = getStream()->read(code, 4);
   while (n != 0) {
     // verify we got an entire code
@@ -138,6 +141,9 @@ void ClientProxy1_0::handleData()
     }
 
     // next message
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    m_currentMessageSize = getStream()->getSize();
+#endif
     n = getStream()->read(code, 4);
   }
 

@@ -662,6 +662,14 @@ void CoreProcess::onCoreIpcMessageReceived(const QString &command, const QString
     Q_EMIT peerFingerprint(args);
   } else if (command == "missingKeyboardLayouts") {
     Q_EMIT missingKeyboardLayouts(args);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  } else if (command == "fileTransfer") {
+    Q_EMIT fileClipboardActivity(args);
+  } else if (command == "fileTransferAvailability" && args == "agentUnavailable") {
+    Q_EMIT fileClipboardActivity(QStringLiteral("agentUnavailable"));
+  } else if (command == "fileTransferClipboardChanged") {
+    Q_EMIT fileClipboardActivity(QStringLiteral("cleared"));
+#endif
   }
 }
 

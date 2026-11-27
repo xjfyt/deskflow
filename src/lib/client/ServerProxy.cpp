@@ -80,6 +80,9 @@ void ServerProxy::handleData()
 {
   // handle messages until there are no more.  first read message code.
   uint8_t code[4];
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  m_currentMessageSize = m_stream->getSize();
+#endif
   uint32_t n = m_stream->read(code, 4);
   while (n != 0) {
     // verify we got an entire code
@@ -116,6 +119,9 @@ void ServerProxy::handleData()
     }
 
     // next message
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    m_currentMessageSize = m_stream->getSize();
+#endif
     n = m_stream->read(code, 4);
   }
 
@@ -547,6 +553,9 @@ void ServerProxy::setClipboard()
     // forward
     Clipboard clipboard;
     clipboard.unmarshall(m_clipboardDataCached, 0);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    onRemoteClipboardChanged(id);
+#endif
     m_client->setClipboard(id, &clipboard);
     m_clipboardDataCached.clear();
     m_clipboardDataCached.shrink_to_fit();
@@ -571,6 +580,9 @@ void ServerProxy::grabClipboard()
   }
 
   // forward
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  onRemoteClipboardChanged(id);
+#endif
   m_client->grabClipboard(id);
 }
 
@@ -744,6 +756,9 @@ void ServerProxy::resetOptions()
 
   // forward
   m_client->resetOptions();
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  onOptionsReset();
+#endif
 
   // reset keep alive
   setKeepAliveRate(kKeepAliveRate);
@@ -768,6 +783,9 @@ void ServerProxy::setOptions()
 
   // forward
   m_client->setOptions(options);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  onOptionsChanged(options);
+#endif
 
   // update modifier table
   for (uint32_t i = 0, n = (uint32_t)options.size(); i < n; i += 2) {

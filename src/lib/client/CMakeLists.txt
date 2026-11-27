@@ -15,3 +15,6 @@ add_library(client STATIC
 )
 
 target_link_libraries(client PUBLIC common)
+if(BUILD_ENHANCED AND WIN32)
+  target_sources(client PRIVATE ServerProxyFileTransfer.cpp)
+endif()

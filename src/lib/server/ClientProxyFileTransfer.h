@@ -1,0 +1,35 @@
+/*
+ * Deskflow -- mouse and keyboard sharing utility
+ * SPDX-FileCopyrightText: (C) 2026 Deskflow Developers
+ * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+ */
+
+#pragma once
+
+#include "deskflow/FileTransferBridge.h"
+#include "server/ClientProxy1_8.h"
+
+// Protocol 1.8 with an explicitly negotiated, optional file-copy extension.
+class ClientProxyFileTransfer : public ClientProxy1_8
+{
+public:
+  ClientProxyFileTransfer(const std::string &name, deskflow::IStream *stream, Server *server, IEventQueue *events);
+  void setOptions(const OptionsList &options) override;
+  void resetOptions() override;
+  void offerFiles();
+  void sourceClipboardChanged();
+  bool canTransferFiles() const;
+  bool hasActiveFileTransfer() const;
+
+protected:
+  bool parseMessage(const uint8_t *code) override;
+
+private:
+  deskflow::FileTransferBridge m_transfer;
+  OptionsList m_lastOptions;
+  bool m_haveOptions = false;
+  bool m_advertised = false;
+  bool m_everAdvertised = false;
+  bool m_negotiated = false;
+  bool m_everNegotiated = false;
+};

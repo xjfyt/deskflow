@@ -7,6 +7,9 @@
  */
 
 #include "server/ClientProxyUnknown.h"
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include "server/ClientProxyFileTransfer.h"
+#endif
 
 #include "base/IEventQueue.h"
 #include "base/Log.h"
@@ -29,10 +32,13 @@
 // ClientProxyUnknown
 //
 
-ClientProxyUnknown::ClientProxyUnknown(deskflow::IStream *stream, double timeout, Server *server, IEventQueue *events)
+ClientProxyUnknown::ClientProxyUnknown(
+    deskflow::IStream *stream, double timeout, Server *server, IEventQueue *events, bool authenticatedPeer
+)
     : m_stream(stream),
       m_server(server),
-      m_events(events)
+      m_events(events),
+      m_authenticatedPeer(authenticatedPeer)
 {
   assert(m_server != nullptr);
 
@@ -174,6 +180,12 @@ void ClientProxyUnknown::initProxy(const std::string &name, int major, int minor
       break;
 
     case 8:
+#ifdef DESKFLOW_AUTO_FILE_COPY
+      if (m_authenticatedPeer && deskflow::FileTransferBridge::enabled()) {
+        m_proxy = new ClientProxyFileTransfer(name, m_stream, m_server, m_events);
+        break;
+      }
+#endif
       m_proxy = new ClientProxy1_8(name, m_stream, m_server, m_events);
       break;
 

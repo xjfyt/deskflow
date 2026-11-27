@@ -27,6 +27,11 @@ CoreIpcServer &CoreIpcServer::instance()
   return *s_instance;
 }
 
+bool CoreIpcServer::available()
+{
+  return s_instance != nullptr;
+}
+
 void CoreIpcServer::processCommand(QLocalSocket *clientSocket, const QString &command, const QStringList &parts)
 {
   Q_UNUSED(parts)

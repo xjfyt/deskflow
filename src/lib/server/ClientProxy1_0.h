@@ -58,6 +58,9 @@ public:
 protected:
   virtual bool parseHandshakeMessage(const uint8_t *code);
   virtual bool parseMessage(const uint8_t *code);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  uint32_t getCurrentMessageSize() const { return m_currentMessageSize; }
+#endif
 
   virtual void resetHeartbeatRate();
   virtual void setHeartbeatRate(double rate, double alarm);
@@ -99,5 +102,8 @@ private:
   double m_heartbeatAlarm;
   EventQueueTimer *m_heartbeatTimer = nullptr;
   MessageParser m_parser = &ClientProxy1_0::parseHandshakeMessage;
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  uint32_t m_currentMessageSize = 0;
+#endif
   IEventQueue *m_events;
 };
