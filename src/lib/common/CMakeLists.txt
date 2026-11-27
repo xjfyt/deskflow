@@ -36,6 +36,9 @@ add_library(common STATIC
 )
 
 target_link_libraries(common PUBLIC Qt6::Core)
+if(BUILD_ENHANCED AND WIN32)
+  target_sources(common PRIVATE FileTransferCache.cpp)
+endif()
 
 target_include_directories(common
   PUBLIC

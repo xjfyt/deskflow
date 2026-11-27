@@ -5,6 +5,19 @@ if(WIN32)
   set(extra_libs platform version)
 endif()
 
+if(BUILD_ENHANCED AND WIN32)
+  foreach(file_copy_test IN ITEMS FileTransferSessionTests FileTransferFormatTests)
+    create_test(
+      NAME ${file_copy_test}
+      DEPENDS app
+      LIBS arch base io ${extra_libs}
+      SOURCE ${file_copy_test}.cpp
+      WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/deskflow"
+    )
+  endforeach()
+  set_tests_properties(FileTransferSessionTests PROPERTIES TIMEOUT 90)
+endif()
+
 create_test(
   NAME ClipboardTests
   DEPENDS app

@@ -100,3 +100,10 @@ target_link_libraries(${lib_name}
 if(UNIX AND NOT APPLE)
   target_link_libraries(${lib_name} PRIVATE server)
 endif()
+
+if(BUILD_ENHANCED AND WIN32)
+  target_sources(${lib_name} PRIVATE
+    FileTransferFormat.cpp
+    FileTransferSession.cpp
+  )
+endif()

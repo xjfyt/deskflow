@@ -1,6 +1,15 @@
 # SPDX-FileCopyrightText: (C) 2025 Deskflow Developers
 # SPDX-License-Identifier: MIT
 
+if(BUILD_ENHANCED AND WIN32)
+  create_test(
+    NAME FileTransferCacheTests
+    DEPENDS common
+    SOURCE FileTransferCacheTests.cpp
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/common"
+  )
+endif()
+
 create_test(
   NAME SettingsTests
   DEPENDS common
