@@ -12,6 +12,14 @@
 #include <assert.h>
 #include <vector>
 
+namespace {
+#ifdef DESKFLOW_AUTO_FILE_COPY
+constexpr auto WireFormats = static_cast<uint32_t>(IClipboard::Format::Files);
+#else
+constexpr auto WireFormats = static_cast<uint32_t>(IClipboard::Format::TotalFormats);
+#endif
+}
+
 //
 // IClipboard
 //
@@ -60,7 +68,7 @@ void IClipboard::unmarshall(IClipboard *clipboard, const std::string_view &data,
       // save the data if it's a known format.  if either the client
       // or server supports more clipboard formats than the other
       // then one of them will get a format >= TotalFormats here.
-      if (format < IClipboard::Format::TotalFormats) {
+      if (static_cast<uint32_t>(format) < WireFormats) {
         clipboard->add(format, std::string(index, size));
       }
       index += size;
@@ -83,7 +91,7 @@ std::string IClipboard::marshall(const IClipboard *clipboard)
   assert(clipboard != nullptr);
 
   std::string data;
-  static const auto totalClipboardFormats = static_cast<int>(Format::TotalFormats);
+  static const auto totalClipboardFormats = WireFormats;
   std::vector<std::string> formatData;
   formatData.resize(totalClipboardFormats);
   // FIXME -- use current time

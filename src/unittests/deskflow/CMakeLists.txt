@@ -6,7 +6,7 @@ if(WIN32)
 endif()
 
 if(BUILD_ENHANCED AND WIN32)
-  foreach(file_copy_test IN ITEMS FileTransferSessionTests FileTransferFormatTests)
+  foreach(file_copy_test IN ITEMS FileTransferSessionTests FileAgentProtocolTests FileTransferFormatTests)
     create_test(
       NAME ${file_copy_test}
       DEPENDS app

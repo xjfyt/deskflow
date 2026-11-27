@@ -50,3 +50,6 @@ endif()
 add_subdirectory(deskflow-core)
 add_subdirectory(deskflow-daemon) #Only used on windows
 add_subdirectory(deskflow-gui)
+if(BUILD_ENHANCED AND WIN32)
+  add_subdirectory(deskflow-file-agent)
+endif()

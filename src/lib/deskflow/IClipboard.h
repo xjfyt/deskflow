@@ -51,6 +51,9 @@ public:
     Text,        //!< Text format, UTF-8, newline is LF
     HTML,        //!< HTML format, HTML fragment, UTF-8, newline is LF
     Bitmap,      //!< Bitmap format, BMP 24/32bpp, BI_RGB
+#ifdef DESKFLOW_AUTO_FILE_COPY
+    Files, //!< In-process references for the authenticated file channel
+#endif
     TotalFormats //!< The number of clipboard formats supported
   };
 

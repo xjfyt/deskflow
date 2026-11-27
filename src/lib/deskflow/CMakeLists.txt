@@ -103,7 +103,10 @@ endif()
 
 if(BUILD_ENHANCED AND WIN32)
   target_sources(${lib_name} PRIVATE
+    FileAgentProtocol.cpp
     FileTransferFormat.cpp
     FileTransferSession.cpp
+    WindowsFileAgentTransport.cpp
   )
+  target_link_libraries(${lib_name} PUBLIC Wtsapi32 Userenv)
 endif()

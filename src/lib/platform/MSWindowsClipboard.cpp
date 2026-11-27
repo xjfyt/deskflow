@@ -13,6 +13,11 @@
 #include "platform/MSWindowsClipboardFacade.h"
 #include "platform/MSWindowsClipboardHTMLConverter.h"
 #include "platform/MSWindowsClipboardUTF16Converter.h"
+#ifdef DESKFLOW_AUTO_FILE_COPY
+#include "platform/MSWindowsClipboardFileConverter.h"
+
+#include <oleidl.h>
+#endif
 
 //
 // MSWindowsClipboard
@@ -31,6 +36,10 @@ MSWindowsClipboard::MSWindowsClipboard(HWND window, Access access)
   m_converters.push_back(new MSWindowsClipboardUTF16Converter);
   m_converters.push_back(new MSWindowsClipboardBitmapConverter);
   m_converters.push_back(new MSWindowsClipboardHTMLConverter);
+#ifdef DESKFLOW_AUTO_FILE_COPY
+  if (m_access == Access::Native)
+    m_converters.push_back(new MSWindowsClipboardFileConverter);
+#endif
 }
 
 MSWindowsClipboard::~MSWindowsClipboard()
@@ -101,6 +110,24 @@ void MSWindowsClipboard::add(Format format, const std::string &data)
       if (win32Data != nullptr) {
         LOG_DEBUG("add %d bytes to clipboard format: %d", data.size(), format);
         m_facade->write(win32Data, converter->getWin32Format());
+#ifdef DESKFLOW_AUTO_FILE_COPY
+        if (format == Format::Files && GetClipboardData(CF_HDROP) == win32Data) {
+          const auto effectFormat = RegisterClipboardFormatW(L"Preferred DropEffect");
+          if (effectFormat) {
+            const auto effect = GlobalAlloc(GMEM_MOVEABLE, sizeof(DWORD));
+            if (effect) {
+              if (const auto value = static_cast<DWORD *>(GlobalLock(effect))) {
+                *value = DROPEFFECT_COPY;
+                GlobalUnlock(effect);
+                if (!SetClipboardData(effectFormat, effect))
+                  GlobalFree(effect);
+              } else {
+                GlobalFree(effect);
+              }
+            }
+          }
+        }
+#endif
         isSucceeded = true;
         break;
       } else {
